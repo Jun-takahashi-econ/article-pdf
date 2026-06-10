@@ -1,0 +1,26 @@
+#!/bin/bash
+# SaveArticle.app — ダブルクリックするとURL入力ダイアログが出て、PDF化してOneDriveに保存する
+# この.appは economist-pdf フォルダの中に置いたまま使うこと(pdf.mjsを相対参照するため)
+
+PROJECT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+URL=$(osascript -e 'text returned of (display dialog "記事のURLを貼り付けてください" default answer "" with title "Save Article" buttons {"キャンセル", "保存"} default button "保存" cancel button "キャンセル")' 2>/dev/null)
+
+# キャンセルまたは空入力なら終了
+[ -z "$URL" ] && exit 0
+
+if ! command -v node >/dev/null 2>&1; then
+  osascript -e 'display dialog "Node.jsが見つかりません。" with title "Save Article" buttons {"OK"}'
+  exit 1
+fi
+
+cd "$PROJECT_DIR" || exit 1
+OUTPUT=$(node pdf.mjs "$URL" 2>&1)
+
+if [ $? -eq 0 ]; then
+  osascript -e 'display notification "OneDriveに保存しました" with title "Save Article" sound name "Glass"'
+else
+  MSG=$(echo "$OUTPUT" | tail -n 3 | sed 's/"/'"'"'/g')
+  osascript -e "display dialog \"エラー:\n${MSG}\" with title \"Save Article\" buttons {\"OK\"}"
+fi

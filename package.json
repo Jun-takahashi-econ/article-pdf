@@ -1,0 +1,14 @@
+{
+  "name": "article-pdf",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "URLを渡すとログイン済みChromeで記事を開き、本文抽出してPDF化する",
+  "scripts": {
+    "login": "node pdf.mjs --login"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.5.0",
+    "puppeteer-core": "^23.0.0"
+  }
+}
