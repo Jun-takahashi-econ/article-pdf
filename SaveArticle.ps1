@@ -1,4 +1,4 @@
-# SaveArticle.ps1 — URL入力ボックスを表示し、PDF化してOneDriveに保存する
+﻿# SaveArticle.ps1 — URL入力ボックスを表示し、PDF化してOneDriveに保存する
 Add-Type -AssemblyName Microsoft.VisualBasic
 Add-Type -AssemblyName System.Windows.Forms
 

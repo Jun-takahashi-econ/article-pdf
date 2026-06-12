@@ -15,6 +15,7 @@ import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
 const require = createRequire(import.meta.url);
@@ -38,7 +39,7 @@ function detectOneDrive() {
 
 // config.json(プロジェクト直下、任意)で保存先を明示できる: {"outDir": "/path/to/folder"}
 function readConfig() {
-  const p = path.join(path.dirname(new URL(import.meta.url).pathname), "config.json");
+  const p = path.join(path.dirname(fileURLToPath(import.meta.url)), "config.json");
   try {
     return JSON.parse(readFileSync(p, "utf8"));
   } catch {
