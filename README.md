@@ -131,7 +131,7 @@ OneDriveに出力されるので、iPadのGoodNotesからは「読み込む」�
 | SaveArticleをダブルクリックしても何も起きない | `SaveArticle.ps1` がUTF-8 BOM付きか確認（上記ハマりどころ参照）。`powershell -File SaveArticle.ps1` を直接実行するとエラーが見えます |
 | ChromeもEdgeも見つからないと言われる | `CHROME_PATH=/path/to/chrome node pdf.mjs <URL>` で実行ファイルを指定 |
 | config.jsonが効いていない | 実行時ログの「出力先:」を確認。JSONのバックスラッシュのエスケープ漏れに注意 |
-| 画像が欠ける | インタラクティブ図表（SVG/canvas）はPDF化できない場合があります |
+| グラフ・画像が欠ける | 静的画像・canvas・インタラクティブなグラフ（`infographics.economist.com` 等のiframe）を自動で取り込むよう対応済み。それでも欠ける場合はネットワークが遅い可能性があるので再実行を。実行ログの「グラフ救済: N/M件」で取り込めたグラフ数を確認できます |
 
 - ChromeかEdgeを自動検出します（大学PCならEdgeは確実に入っています）
 - ログインセッションはPCごとに保存されるため、PCごとに初回 `--login` が必要です
