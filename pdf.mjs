@@ -139,13 +139,20 @@ try {
     const isPlaceholder = (u) =>
       !u ||
       u.startsWith("data:") ||
-      /\b(blank|placeholder|spacer|1x1|transparent)\b/i.test(u);
+      // キーワード直後に区切り(. / ? # または末尾)を要求し、'spacer-chart.png' のような
+      // 正当なファイル名を誤ってプレースホルダ扱いしないようにする(image-placeholder.svg等は引き続き一致)。
+      /\b(blank|placeholder|spacer|1x1|transparent)(?:\.|\/|\?|#|$)/i.test(u);
     // srcset から最大解像度の候補URLを取り出す(グラフは高解像度の方が読みやすい)
     const largestFromSrcset = (srcset) => {
       if (!srcset) return null;
       let best = null;
       let bestW = -1;
-      for (const part of srcset.split(",")) {
+      // 候補の区切りは「カンマ + 空白」。単純な split(",") は使えない —
+      // The EconomistのCloudflare画像URL(/cdn-cgi/image/width=1424,quality=100,format=auto/…)は
+      // URL自体にカンマを含むため、split(",")だと1つのURLが断片に割れる。すると最大幅の候補が
+      // "format=auto/…/FNC219.png" のような壊れた相対URLになり、絶対化で 404 → Next.jsが
+      // placeholder.svg に差し替え、グラフが白紙で出力される(本不具合の根本原因)。
+      for (const part of srcset.split(/,\s+(?=\S)/)) {
         const [u, d] = part.trim().split(/\s+/);
         if (!u) continue;
         const w = d ? parseInt(d, 10) || 1 : 1;
@@ -203,6 +210,14 @@ try {
   // 本文外(広告・関連記事)の候補はマーカーが残らないため、自動的に除外される。
   const candidates = await page.evaluate(() => {
     const list = [];
+    // 遅延読み込みのプレースホルダ(例: image-placeholder.svg)を実画像と誤認しないための判定。
+    // プレースホルダURLをグラフのsrcとして記録すると、後段で本物の画像と取り違えて白紙になる。
+    const isPlaceholder = (u) =>
+      !u ||
+      u.startsWith("data:") ||
+      // キーワード直後に区切り(. / ? # または末尾)を要求し、'spacer-chart.png' のような
+      // 正当なファイル名を誤ってプレースホルダ扱いしないようにする(image-placeholder.svg等は引き続き一致)。
+      /\b(blank|placeholder|spacer|1x1|transparent)(?:\.|\/|\?|#|$)/i.test(u);
     const isChartFrame = (s) =>
       /infographics\.economist\.com|interactive\.economist\.com|datawrapper/.test(s);
     const mark = (el, kind, src) => {
@@ -225,9 +240,11 @@ try {
       const r = fig.getBoundingClientRect();
       if (r.width < 200 || r.height < 120) continue;
       const img = fig.querySelector("img");
-      const src = img && (img.getAttribute("src") || img.currentSrc);
-      if (src && !src.startsWith("data:")) mark(fig, "img", src);
-      else if (fig.querySelector("svg, canvas")) mark(fig, "shot", null);
+      // 実際に表示中の画像URL(currentSrc)を優先。プレースホルダは実画像扱いしない。
+      const src = img && [img.currentSrc, img.getAttribute("src")].find((u) => u && !isPlaceholder(u));
+      if (src) mark(fig, "img", src);
+      // 実URLが取れない画像グラフ(プレースホルダのまま等)やSVG/canvasは、表示をスクショして救済
+      else if (img || fig.querySelector("svg, canvas")) mark(fig, "shot", null);
     }
     // figure外の大きな単独SVG/canvasチャート
     for (const el of document.querySelectorAll("svg, canvas")) {
@@ -372,7 +389,8 @@ try {
   // 読み込めなかった画像があれば警告(グラフが空のまま出力されるのを検知できるように)
   const failedImgs = await renderPage.evaluate(() =>
     [...document.images]
-      .filter((i) => !(i.complete && i.naturalWidth > 0))
+      // 幅・高さの両方を確認(高さ0の部分デコード=実質白紙、を幅>0だけでは見逃すため)
+      .filter((i) => !(i.complete && i.naturalWidth > 2 && i.naturalHeight > 2))
       .map((i) => i.src)
   );
   if (failedImgs.length) {
