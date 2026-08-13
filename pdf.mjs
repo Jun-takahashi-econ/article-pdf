@@ -30,6 +30,9 @@ const DEFAULT_SITE = {
   loginUrl: null,      // null なら --login の対象にできない
   accent: "#333333",
   chartFrame: /datawrapper|flourish|flo\.uri\.sh|infogram/i,
+  // 記事末尾(■以降)で落としたい、そのサイト特有の勧誘ブロックの言い回し。
+  // 汎用の勧誘パターン(sign up / subscriber-only / newsletter)は常に適用される。
+  junkText: null,
 };
 
 const SITES = {
@@ -38,6 +41,9 @@ const SITES = {
     loginUrl: "https://www.economist.com/",
     accent: "#e3120b",
     chartFrame: /infographics\.economist\.com|interactive\.economist\.com|datawrapper/i,
+    // 紙版の号を宣伝するカード(表紙画像つきで1ページ丸ごと使う)。
+    // 「This article appeared in the ... print edition」の行は出典情報なので残す。
+    junkText: /discover stories from this section|explore the edition/i,
   },
 };
 
@@ -260,6 +266,86 @@ try {
     );
   });
   await new Promise((r) => setTimeout(r, 800)); // IntersectionObserver等の最終差し替え待ち
+
+  // ---- 本文に混入する非本文要素をDOMから除去 ----
+  // 音声プレーヤーとニュースレター勧誘はReadabilityが本文と判定してしまう位置にあり、
+  // PDFに「Listen to this story / AI Narrated / 0:00 / 0:00」や購読案内が残る。
+  // 抽出後の文字列置換は本文を巻き添えにしやすいので、抽出前にDOMから外す。
+  const cleaned = await page.evaluate((junkTextSrc) => {
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+    const out = { player: 0, promo: 0 };
+
+    // 1) 音声プレーヤー。Economistは <audio> と「Listen to this story」「AI Narrated」の
+    //    ラベルを小さなコンテナにまとめている。再生時間表示(0:00 / 0:00)はネイティブ
+    //    コントロールのshadow DOM由来なので、<audio>ごと外せば一緒に消える。
+    for (const media of document.querySelectorAll("audio, video")) {
+      let target = media;
+      // ラベルを巻き取れるところまで親をたどる。本文を含む器は絶対に消さないため、
+      // 「<p>を含まない」「テキストが十分短い」の両方を満たす間だけ上がる。
+      for (let i = 0; i < 4; i++) {
+        const p = target.parentElement;
+        if (!p || /^(BODY|MAIN|ARTICLE|SECTION)$/.test(p.tagName)) break;
+        if (p.querySelector("p")) break;
+        if (norm(p.textContent).length > 200) break;
+        target = p;
+      }
+      target.remove();
+      out.player++;
+    }
+    // <audio>を持たないプレーヤー実装向けの保険。ラベル完全一致の最小要素だけを消す
+    // (部分一致で親ごと消すと本文が飛ぶ)。
+    const LABEL = /^(listen to this story|ai[\s-]*narrated)$/i;
+    for (const el of document.querySelectorAll("figcaption, span, div, p, button")) {
+      if (!el.isConnected) continue;
+      if (!LABEL.test(norm(el.textContent))) continue;
+      if ([...el.children].some((c) => LABEL.test(norm(c.textContent)))) continue; // 最小要素に限定
+      el.remove();
+      out.player++;
+    }
+
+    // 2) 末尾のニュースレター勧誘。本文中にも "sign up" は出うるので、必ず位置で限定する
+    //    — Economistは本文の終わりを ■ (U+25A0) で示すので、その後ろだけを対象にする。
+    //    __NEXT_DATA__ のJSONにも ■ が入っているため script/style は走査から外す。
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: (nd) =>
+        nd.parentElement && /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(nd.parentElement.tagName)
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    });
+    let endNode = null;
+    let nd;
+    while ((nd = walker.nextNode())) if (nd.nodeValue.includes("■")) endNode = nd;
+    const endEl = endNode?.parentElement || null;
+
+    if (endEl) {
+      // 勧誘特有の言い回しに限定する。単に "newsletter" を含むだけの関連記事見出し
+      // (「Plot Twist newsletter: ...」等)を巻き込まないため。
+      const patterns = [
+        "\\bsign up (?:to|for)\\b",
+        "subscriber[-\\s]only\\b",
+        "\\b(?:weekly|daily|monthly)\\b[^.]{0,40}\\bnewsletter\\b",
+      ];
+      if (junkTextSrc) patterns.push(junkTextSrc);
+      const PROMO = new RegExp(patterns.join("|"), "i");
+      const hits = [];
+      for (const el of document.querySelectorAll("p, div, section, aside")) {
+        if (!(endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+        if (el.contains(endEl)) continue;
+        const t = norm(el.textContent);
+        if (!t || t.length > 400 || !PROMO.test(t)) continue;
+        hits.push(el);
+      }
+      // 勧誘カードは入れ子になっているので、一番外側だけを消してカードごと落とす
+      for (const el of hits) {
+        if (hits.some((o) => o !== el && o.contains(el))) continue;
+        el.remove();
+        out.promo++;
+      }
+    }
+    return out;
+  }, site.junkText?.source ?? null);
+  if (cleaned.player || cleaned.promo)
+    console.log(`本文の残骸を除去: プレーヤー${cleaned.player}件 / 購読案内${cleaned.promo}件`);
 
   // ---- グラフの位置にマーカーを挿入 ----
   // The Economistのグラフは多くが infographics.economist.com の iframe、または <figure> 内の画像。
