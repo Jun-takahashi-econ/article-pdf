@@ -5,6 +5,7 @@
  *
  * 使い方:
  *   node pdf.mjs --login            # 初回のみ: ブラウザが開くのでThe Economistにログイン
+ *   node pdf.mjs --login ft         # 別サイト(FT)のログイン用に起動
  *   node pdf.mjs <URL>              # 記事をPDF化
  *
  * 出力先: 環境変数 ARTICLE_PDF_OUT、未設定なら ~/Documents/ArticlePDF
@@ -50,6 +51,16 @@ const SITES = {
     // 紙版の号を宣伝するカード(表紙画像つきで1ページ丸ごと使う)。
     // 「This article appeared in the ... print edition」の行は出典情報なので残す。
     junkText: /discover stories from this section|explore the edition/i,
+  },
+  "ft.com": {
+    name: "Financial Times",
+    loginUrl: "https://www.ft.com/",
+    accent: "#0d7680",
+    // 実機で確認した範囲では、FTの図表は figure.n-content-image の静的画像で配信されており
+    // グラフのiframeは出てこなかった(静的画像は既存のfigure経路で拾える)。iframeを使う経路は
+    // Flourish — ft.comのページ設定に useFlourish / useFlourishIFrame のフラグがある — と、
+    // FT自身のグラフィックスホスト ig.ft.com に絞る。Datawrapper/Infogramは痕跡がないので外した。
+    chartFrame: /ig\.ft\.com|flo\.uri\.sh|public\.flourish\.studio/i,
   },
 };
 
@@ -102,14 +113,22 @@ const fetchAsDataUri = (page, src) =>
         fr.onerror = () => resolve(null);
         fr.readAsDataURL(blob);
       });
-    try {
-      const res = await fetch(u, { credentials: "include" });
-      if (!res.ok) return null;
-      const blob = await res.blob();
-      return await toDataUri(blob);
-    } catch {
-      return null;
+    // 認証付きを先に試す(Economistの画像は記事と同一オリジンなのでこれで通る)。
+    // FTのように画像が別ホストのCDN(images.ft.com)にある場合、認証付きリクエストには
+    // CORSが許可されず fetch が例外になるが、認証なしなら許可される。両方試す。
+    for (const credentials of ["include", "omit"]) {
+      try {
+        const res = await fetch(u, { credentials });
+        if (!res.ok) continue;
+        const blob = await res.blob();
+        if (!blob.size) continue; // no-corsのopaqueレスポンス等
+        const dataUri = await toDataUri(blob);
+        if (dataUri) return dataUri;
+      } catch {
+        // 次の方式で取り直す
+      }
     }
+    return null;
   }, src);
 
 // ---- 出力先の決定: ARTICLE_PDF_OUT > OneDrive自動検出 > ~/Documents/ArticlePDF ----
@@ -515,7 +534,11 @@ try {
       byline: parsed.byline || "",
       content: parsed.content,
       siteName: parsed.siteName || location.hostname,
-      date: time?.getAttribute("datetime") || time?.textContent || "",
+      // <time datetime> を最優先。無い場合は Readability が
+      // article:published_time / JSON-LD から拾った publishedTime を使う
+      // (<time>の表示文字列は "3 hours ago" 等になりうるので最後の手段)。
+      date:
+        time?.getAttribute("datetime") || parsed.publishedTime || time?.textContent || "",
     };
   });
 
@@ -590,7 +613,10 @@ try {
   }
 
   // 整形済みHTMLでレンダリング
-  const dateStr = article.date ? article.date.slice(0, 10) : "";
+  // ファイル名は YYYY-MM-DD_slug.pdf に揃えたいので、ISO形式でない日付は採用しない
+  const rawDate = article.date || "";
+  const isoDate = /^\d{4}-\d{2}-\d{2}/.test(rawDate) ? rawDate.slice(0, 10) : "";
+  const dateStr = isoDate || rawDate.slice(0, 40);
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -666,7 +692,7 @@ try {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
-  const fname = `${dateStr || new Date().toISOString().slice(0, 10)}_${slug}.pdf`;
+  const fname = `${isoDate || new Date().toISOString().slice(0, 10)}_${slug}.pdf`;
   const outPath = path.join(OUT_DIR, fname);
 
   await renderPage.pdf({

@@ -1,6 +1,6 @@
 # article-pdf
 
-[The Economist](https://www.economist.com/)の記事のURLをアプリに渡すと、ログイン済みブラウザで記事を開き、本文だけを抽出して
+[The Economist](https://www.economist.com/)や[Financial Times](https://www.ft.com/)の記事のURLをアプリに渡すと、ログイン済みブラウザで記事を開き、本文だけを抽出して
 テキストレイヤー付きの綺麗なPDFを出力するツールです（OCR不要）。
 PDFで保存→iPadのGoodNotes等からそのまま取り込めます。
 GoodNotes等だとメモ機能や翻訳機能が充実しているので、英語新聞の習慣化を無理なくできると思います。
@@ -13,8 +13,21 @@ webで記事を印刷するとレイアウトが大きく崩れてしまいま�
 ```
 
 - ログインセッションは専用プロファイル（`~/.article-pdf-profile`）に保存。初回ログイン後は自動
+- プロファイルは媒体共通なので、The EconomistとFTのログインは同居できます（片方を入れても他方は消えません）
+- 記事冒頭の写真、本文中のグラフ・図表も取り込みます。音声プレーヤーの残骸やニュースレター勧誘は自動で除去
 - PDFは `日付_タイトル.pdf` の形式で保存
 - 日常利用はターミナル不要：**SaveArticle**（Windows: .vbs / Mac: .app）をダブルクリック → URLを貼ってEnter
+
+### 対応サイト
+
+| サイト | ログイン | 備考 |
+|---|---|---|
+| The Economist | `node pdf.mjs --login` | 既定。`--login economist` でも同じ |
+| Financial Times | `node pdf.mjs --login ft` | 個人契約アカウント |
+| その他 | – | ログイン不要な記事なら、そのままURLを渡せば本文抽出を試みます |
+
+媒体固有の設定（ログインURL・見出しの色・グラフ埋め込みのホスト名など）は `pdf.mjs` 冒頭の
+`SITES` テーブルに集約してあります。新しい媒体はここに1エントリ足せば対応できます。
 
 ---
 
@@ -33,7 +46,7 @@ webで記事を印刷するとレイアウトが大きく崩れてしまいま�
 > 3. **保存先設定**: OneDriveのパスを検出して候補を私に提示し（Windowsは環境変数 `OneDrive` / `OneDriveCommercial`、
 >    Macは `~/Library/CloudStorage/OneDrive-*`）、保存先が決まったらリポジトリ直下に
 >    `config.json` を `{"outDir": "<保存先パス>"}` で作成（JSONなのでWindowsのバックスラッシュはエスケープ）
-> 4. **初回ログイン**: `node pdf.mjs --login` を実行。このコマンドはブラウザを開いた後、
+> 4. **初回ログイン**: `node pdf.mjs --login` を実行（FTも使う場合は続けて `node pdf.mjs --login ft`）。このコマンドはブラウザを開いた後、
 >    ターミナルでのEnter入力を待ち続けるので、バックグラウンド実行にして
 >    「フラグファイルが作られたらEnter（改行）をstdinに送るパイプ」等で制御すること。
 >    ブラウザが開いたら私にログインを促し、完了の合図を待ってからEnterを送る
@@ -61,7 +74,8 @@ webで記事を印刷するとレイアウトが大きく崩れてしまいま�
 ```bash
 cd article-pdf
 npm install
-node pdf.mjs --login   # ブラウザが開くのでログイン → ターミナルに戻ってEnter
+node pdf.mjs --login      # The Economist: ブラウザが開くのでログイン → ターミナルに戻ってEnter
+node pdf.mjs --login ft   # FTも使う場合（同じプロファイルに追加されます）
 ```
 
 保存先を明示する場合はリポジトリ直下に `config.json` を作成:
@@ -127,7 +141,8 @@ OneDriveに出力されるので、iPadのGoodNotesからは「読み込む」�
 
 | 症状 | 対処 |
 |------|------|
-| 「本文を抽出できませんでした」 | セッション切れの可能性。`node pdf.mjs --login` で再ログイン |
+| 「本文を抽出できませんでした」 | セッション切れの可能性。エラーメッセージに出るコマンド（`node pdf.mjs --login` / `--login ft`）で再ログイン |
+| 冒頭の写真が入らない | 実行ログの「冒頭画像:」を確認。記事によっては本文中に取り込まれている（その場合は重複を避けるためヘッダーには入れません） |
 | SaveArticleをダブルクリックしても何も起きない | `SaveArticle.ps1` がUTF-8 BOM付きか確認（上記ハマりどころ参照）。`powershell -File SaveArticle.ps1` を直接実行するとエラーが見えます |
 | ChromeもEdgeも見つからないと言われる | `CHROME_PATH=/path/to/chrome node pdf.mjs <URL>` で実行ファイルを指定 |
 | config.jsonが効いていない | 実行時ログの「出力先:」を確認。JSONのバックスラッシュのエスケープ漏れに注意 |
