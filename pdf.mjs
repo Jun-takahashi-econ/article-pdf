@@ -33,6 +33,12 @@ const DEFAULT_SITE = {
   // 記事末尾(■以降)で落としたい、そのサイト特有の勧誘ブロックの言い回し。
   // 汎用の勧誘パターン(sign up / subscriber-only / newsletter)は常に適用される。
   junkText: null,
+  // og:image を冒頭画像のフォールバックに使うか。既定は false —
+  // og:image は「記事を代表する画像」であって「冒頭に表示されている画像」とは限らず、
+  // 実測ではEconomistのgraphic-detail記事で本文1枚目のグラフのPNGが入っていた
+  // (og:image=20260620_WOT187.png ↔ 本文のiframe 20260620_WOC187)。無条件に採用すると
+  // 冒頭にグラフが二重に出る。DOM から実表示画像を取れた場合はそちらを常に優先する。
+  heroFromOg: false,
 };
 
 const SITES = {
@@ -76,6 +82,35 @@ function resolveSiteKey(token) {
   }
   return null;
 }
+
+// 画像URLの「ファイル名(拡張子なし)」。同じ画像がCDNの変換URL越しに別表記で現れるため、
+// 抽出済み本文に既にその画像が入っているかの照合キーとして使う。
+const fileKey = (u) =>
+  u.split(/[?#]/)[0].split("/").pop().replace(/\.[a-z0-9]+$/i, "");
+
+const esc = (s) =>
+  String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// 認証済みページの中で取得してデータURI化する。レンダリング用タブで再取得すると
+// CDNが認証/Refererを見て弾くことがあるため、必ず記事ページ側で取る。
+const fetchAsDataUri = (page, src) =>
+  page.evaluate(async (u) => {
+    const toDataUri = (blob) =>
+      new Promise((resolve) => {
+        const fr = new FileReader();
+        fr.onloadend = () => resolve(fr.result);
+        fr.onerror = () => resolve(null);
+        fr.readAsDataURL(blob);
+      });
+    try {
+      const res = await fetch(u, { credentials: "include" });
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      return await toDataUri(blob);
+    } catch {
+      return null;
+    }
+  }, src);
 
 // ---- 出力先の決定: ARTICLE_PDF_OUT > OneDrive自動検出 > ~/Documents/ArticlePDF ----
 function detectOneDrive() {
@@ -347,6 +382,69 @@ try {
   if (cleaned.player || cleaned.promo)
     console.log(`本文の残骸を除去: プレーヤー${cleaned.player}件 / 購読案内${cleaned.promo}件`);
 
+  // ---- 冒頭画像(hero)の取得 ----
+  // Readabilityは「最もスコアの高い1つの部分木」を本文とするため、スコア源になる
+  // テキストを持たない冒頭写真は本文の外に置かれ、マーカー方式では拾えない
+  // (実測: Economistの冒頭写真のfigureは本文コンテナとは別サブツリーにある)。
+  // そこでマーカー方式とは独立に取得し、レンダリング時にヘッダー直後へ差し込む。
+  const hero = await page.evaluate((windowPx) => {
+    // isPlaceholder は上のevaluateにもあるが、evaluateごとに別コンテキストで実行される
+    // ため共有できない。重複は必要。
+    const isPlaceholder = (u) =>
+      !u ||
+      u.startsWith("data:") ||
+      /\b(blank|placeholder|spacer|1x1|transparent)(?:\.|\/|\?|#|$)/i.test(u);
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+    const docTop = (el) => Math.round(el.getBoundingClientRect().top + window.scrollY);
+
+    // figcaptionは説明と出典を別要素に分けていることがあり、textContentをそのまま読むと
+    // 区切りが失われて "…webPhotograph: Reuters" のように繋がる。ブロック単位で読んで繋ぐ。
+    const captionOf = (fig) => {
+      let fc = fig?.querySelector("figcaption");
+      if (!fc) return "";
+      // 単なるラッパーで包まれているだけなら中に降りる
+      for (let i = 0; i < 3 && fc.children.length === 1 && fc.children[0].textContent === fc.textContent; i++)
+        fc = fc.children[0];
+      const parts = [...fc.childNodes]
+        .map((n) => norm(n.nodeType === Node.TEXT_NODE ? n.nodeValue : n.textContent))
+        .filter(Boolean);
+      return parts.join(" / ") || norm(fc.textContent);
+    };
+
+    const h1 = document.querySelector("h1");
+    // 冒頭画像は見出しの近くにある。本文の途中に出てくる図表を拾わないよう縦位置で絞る
+    // (実測: 冒頭写真は見出しの240〜300px下、本文1枚目のグラフは1300px以上下)。
+    const limit = (h1 ? docTop(h1) : 0) + windowPx;
+
+    let best = null;
+    for (const img of document.querySelectorAll("img")) {
+      if (img.closest("nav, footer, aside")) continue;
+      if (img.closest('[class*="masthead" i], [class*="advert" i], [class*="related" i]')) continue;
+      const r = img.getBoundingClientRect();
+      if (r.width < 300 || r.height < 150) continue; // ロゴ・アイコン・サムネイルを除外
+      const top = docTop(img);
+      if (top > limit) continue;
+      const src = [img.currentSrc, img.getAttribute("src")].find((u) => u && !isPlaceholder(u));
+      if (!src) continue;
+      // 「Chart: ...」等のキャプションを持つものは図表。冒頭画像として扱わない
+      // (本文側のマーカー方式が正しい位置に差し込む)。
+      const cap = captionOf(img.closest("figure"));
+      if (/^(chart|map|table|graphic|figure)\s*:/i.test(cap)) continue;
+      if (!best || top < best.top) best = { img, src, top, cap };
+    }
+    if (!best) return { src: null, caption: "", fromOg: false };
+    // マーカー側から「この候補が冒頭画像か」を判別できるように印を付ける
+    best.img.setAttribute("data-hero", "1");
+    return { src: best.src, caption: best.cap, fromOg: false, top: best.top };
+  }, 1500);
+
+  if (!hero.src && site.heroFromOg) {
+    const og = await page.evaluate(
+      () => document.querySelector('meta[property="og:image"]')?.getAttribute("content") || null
+    );
+    if (og) Object.assign(hero, { src: og, caption: "", fromOg: true });
+  }
+
   // ---- グラフの位置にマーカーを挿入 ----
   // The Economistのグラフは多くが infographics.economist.com の iframe、または <figure> 内の画像。
   // Readabilityはこれらを「本文ではない」と判断して削除してしまう(本文だけ残りグラフが消える)。
@@ -372,7 +470,9 @@ try {
       const m = document.createElement("p");
       m.textContent = `[[CHART_${idx}]]`;
       el.parentNode.insertBefore(m, el);
-      list.push({ idx, kind, src: src || null });
+      // 冒頭画像もfigureなのでここで候補になる。マーカーが本文に残ったかどうかで
+      // 「本文の中にある画像」か「本文の外にある冒頭画像」かを後段で判別する。
+      list.push({ idx, kind, src: src || null, isHero: !!el.querySelector("[data-hero]") });
     };
     // インタラクティブ・グラフ(iframe埋め込み)
     for (const f of document.querySelectorAll("iframe")) {
@@ -430,33 +530,22 @@ try {
   // マーカーが本文(article.content)に残っている候補=本文内のグラフ。これらだけを画像化して
   // 差し込む。広告や関連記事はマーカーが残らないので素通り(=除外)される。
   let rescued = 0;
+  let heroInBody = false;
   for (const c of candidates) {
     const token = `[[CHART_${c.idx}]]`;
     if (!article.content.includes(token)) continue; // 本文外は除外
+    // マーカーが本文に残った=この画像は本文の中にある。冒頭画像だった場合は
+    // ここで正しい位置に差し込まれるので、ヘッダーへの挿入はしない。
+    if (c.isHero) heroInBody = true;
     let dataUri = null;
     if (c.kind === "img" && c.src) {
       // Readabilityが既にこの画像を本文に残していれば二重挿入を防ぐ(静的グラフ記事対策)
-      const key = c.src.split(/[?#]/)[0].split("/").pop().replace(/\.[a-z0-9]+$/i, "");
+      const key = fileKey(c.src);
       if (key && article.content.includes(key)) {
         article.content = article.content.split(token).join(""); // マーカーだけ除去
         continue;
       }
-      // 画像グラフ: 認証済みページ内で取得してデータURI化(レンダリング時の再取得失敗を防ぐ)
-      dataUri = await page.evaluate(async (src) => {
-        try {
-          const res = await fetch(src, { credentials: "include" });
-          if (!res.ok) return null;
-          const blob = await res.blob();
-          return await new Promise((resolve) => {
-            const fr = new FileReader();
-            fr.onloadend = () => resolve(fr.result);
-            fr.onerror = () => resolve(null);
-            fr.readAsDataURL(blob);
-          });
-        } catch {
-          return null;
-        }
-      }, c.src);
+      dataUri = await fetchAsDataUri(page, c.src);
     }
     if (!dataUri) {
       // iframe/SVG/canvas、または画像取得失敗時: 表示そのものをスクリーンショットして画像化
@@ -477,6 +566,28 @@ try {
     if (dataUri) rescued++;
   }
   console.log(`グラフ救済: ${rescued}/${candidates.length}件`);
+
+  // ---- 冒頭画像をヘッダー直後に差し込む形に整える ----
+  // 記事によってはReadabilityが同じ画像を本文に残しているので、その場合は入れない。
+  // 写真は本質的な要素ではないため、取得に失敗しても例外にせず静かに諦める。
+  let heroHtml = "";
+  if (hero.src && !heroInBody) {
+    const key = fileKey(hero.src);
+    if (key && article.content.includes(key)) {
+      console.log("冒頭画像: 本文に既にあるためスキップ");
+    } else {
+      const dataUri = await fetchAsDataUri(page, hero.src);
+      if (dataUri) {
+        const cap = hero.caption ? `<figcaption>${esc(hero.caption)}</figcaption>` : "";
+        heroHtml = `<figure class="hero"><img src="${dataUri}" alt="">${cap}</figure>`;
+        console.log(`冒頭画像: 取り込みました${hero.fromOg ? " (og:image)" : ""}`);
+      } else {
+        console.log("冒頭画像: 取得に失敗したためスキップ");
+      }
+    }
+  } else if (!hero.src) {
+    console.log("冒頭画像: 見つかりませんでした");
+  }
 
   // 整形済みHTMLでレンダリング
   const dateStr = article.date ? article.date.slice(0, 10) : "";
@@ -506,6 +617,10 @@ try {
   img, figure, svg { break-inside: avoid; page-break-inside: avoid; }
   img { max-height: 230mm; object-fit: contain; }
   figcaption { font-size: 9.5pt; color: #666; text-align: center; }
+  /* 冒頭画像は本文の図表より控えめに。1ページ目が写真で埋まらないよう高さを抑える */
+  figure.hero { margin: 0 0 1.6em; }
+  figure.hero img { width: 100%; max-height: 120mm; object-fit: contain; margin: 0; }
+  figure.hero figcaption { font-size: 9pt; color: #666; text-align: left; margin-top: 0.4em; }
   h2, h3 { line-height: 1.3; margin-top: 1.6em; }
   blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #444; }
   a { color: inherit; text-decoration: none; }
@@ -514,10 +629,11 @@ try {
 </head>
 <body>
   <header>
-    <div class="site">${site.name || article.siteName}</div>
-    <h1>${article.title}</h1>
-    <div class="meta">${[article.byline, dateStr].filter(Boolean).join(" · ")}</div>
+    <div class="site">${esc(site.name || article.siteName)}</div>
+    <h1>${esc(article.title)}</h1>
+    <div class="meta">${esc([article.byline, dateStr].filter(Boolean).join(" · "))}</div>
   </header>
+  ${heroHtml}
   ${article.content}
 </body>
 </html>`;
