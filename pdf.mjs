@@ -22,6 +22,55 @@ const require = createRequire(import.meta.url);
 
 const PROFILE_DIR = path.join(homedir(), ".article-pdf-profile");
 
+// ---- サイト定義 ----
+// サイト固有の知識はここだけに置く。新しい媒体はエントリを1つ足せば動く。
+// 未定義サイトでも DEFAULT_SITE で汎用ツールとして成立する(本文抽出はReadability任せ)。
+const DEFAULT_SITE = {
+  name: null,          // null なら Readability の siteName を使う
+  loginUrl: null,      // null なら --login の対象にできない
+  accent: "#333333",
+  chartFrame: /datawrapper|flourish|flo\.uri\.sh|infogram/i,
+};
+
+const SITES = {
+  "economist.com": {
+    name: "The Economist",
+    loginUrl: "https://www.economist.com/",
+    accent: "#e3120b",
+    chartFrame: /infographics\.economist\.com|interactive\.economist\.com|datawrapper/i,
+  },
+};
+
+// hostname の末尾一致で解決(www.ft.com → ft.com)。未定義サイトは DEFAULT_SITE。
+function resolveSite(url) {
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return { ...DEFAULT_SITE, key: null, alias: null };
+  }
+  for (const [domain, site] of Object.entries(SITES)) {
+    if (host === domain || host.endsWith(`.${domain}`)) {
+      return { ...DEFAULT_SITE, ...site, key: domain, alias: domain.split(".")[0] };
+    }
+  }
+  return { ...DEFAULT_SITE, key: null, alias: null };
+}
+
+// --login の引数("ft" / "ft.com" / URL)を SITES のキーに解決する。省略時は従来どおりEconomist。
+function resolveSiteKey(token) {
+  if (!token) return "economist.com";
+  const t = token
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\/.*$/, "");
+  for (const domain of Object.keys(SITES)) {
+    if (t === domain || t === domain.split(".")[0]) return domain;
+  }
+  return null;
+}
+
 // ---- 出力先の決定: ARTICLE_PDF_OUT > OneDrive自動検出 > ~/Documents/ArticlePDF ----
 function detectOneDrive() {
   // Windows: 環境変数 OneDrive / OneDriveCommercial が自動で設定されている
@@ -100,9 +149,18 @@ const browser = await puppeteer.launch({
 try {
   // ---- 初回ログインモード ----
   if (arg === "--login") {
+    const key = resolveSiteKey(process.argv[3]);
+    if (!key) {
+      console.error(`未対応のサイトです: ${process.argv[3]}`);
+      console.error(`指定できるのは: ${Object.keys(SITES).map((d) => d.split(".")[0]).join(", ")}`);
+      process.exit(1);
+    }
+    const loginSite = { ...DEFAULT_SITE, ...SITES[key] };
     const page = await browser.newPage();
-    await page.goto("https://www.economist.com/", { waitUntil: "domcontentloaded" });
-    console.log("ブラウザでログインしてください。完了したらこのターミナルでEnterを押してください。");
+    await page.goto(loginSite.loginUrl, { waitUntil: "domcontentloaded" });
+    // Chromeプロファイルは全サイト共通なので、複数媒体のCookieが同居する
+    // (FTにログインしてもEconomistのセッションは消えない)。
+    console.log(`${loginSite.name} にログインしてください。完了したらこのターミナルでEnterを押してください。`);
     await new Promise((resolve) => {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       rl.question("", () => { rl.close(); resolve(); });
@@ -113,6 +171,7 @@ try {
 
   // ---- 記事PDF化モード ----
   const url = arg;
+  const site = resolveSite(url);
   const page = await browser.newPage();
   console.log(`取得中: ${url}`);
   await page.goto(url, { waitUntil: "networkidle2", timeout: 90_000 });
@@ -208,7 +267,8 @@ try {
   // そこで各グラフ候補の直前に一意なマーカー段落を挿入する。マーカー(テキスト)はReadabilityに
   // 残るので、抽出後に本文中のマーカーを実際のグラフ画像へ置き換えれば、正しい位置に差し込める。
   // 本文外(広告・関連記事)の候補はマーカーが残らないため、自動的に除外される。
-  const candidates = await page.evaluate(() => {
+  // 正規表現はevaluateに直接渡せない(別コンテキスト)ので source 文字列で渡して組み直す
+  const candidates = await page.evaluate((chartFrameSrc) => {
     const list = [];
     // 遅延読み込みのプレースホルダ(例: image-placeholder.svg)を実画像と誤認しないための判定。
     // プレースホルダURLをグラフのsrcとして記録すると、後段で本物の画像と取り違えて白紙になる。
@@ -218,8 +278,8 @@ try {
       // キーワード直後に区切り(. / ? # または末尾)を要求し、'spacer-chart.png' のような
       // 正当なファイル名を誤ってプレースホルダ扱いしないようにする(image-placeholder.svg等は引き続き一致)。
       /\b(blank|placeholder|spacer|1x1|transparent)(?:\.|\/|\?|#|$)/i.test(u);
-    const isChartFrame = (s) =>
-      /infographics\.economist\.com|interactive\.economist\.com|datawrapper/.test(s);
+    const chartFrameRe = new RegExp(chartFrameSrc, "i");
+    const isChartFrame = (s) => chartFrameRe.test(s);
     const mark = (el, kind, src) => {
       const idx = list.length;
       el.setAttribute("data-rescue", String(idx));
@@ -253,7 +313,7 @@ try {
       if (r.width >= 250 && r.height >= 150) mark(el, "shot", null);
     }
     return list;
-  });
+  }, site.chartFrame.source);
 
   // Readabilityをページに注入して本文抽出
   const readabilityPath = require.resolve("@mozilla/readability/Readability.js");
@@ -274,9 +334,10 @@ try {
   });
 
   if (!article || !article.content || article.content.length < 500) {
-    throw new Error(
-      "本文を抽出できませんでした。未ログインまたはpaywallの可能性があります。`node pdf.mjs --login` を試してください。"
-    );
+    const hint = site.loginUrl
+      ? `\`node pdf.mjs --login ${site.alias}\` を試してください。`
+      : "このサイトはログイン定義がないため、ブラウザで開ける記事か確認してください。";
+    throw new Error(`本文を抽出できませんでした。未ログインまたはpaywallの可能性があります。${hint}`);
   }
 
   // ---- 本文に残ったマーカーを実際のグラフ画像に置き換える ----
@@ -349,9 +410,9 @@ try {
     margin: 0 auto;
     padding: 8px 0 24px;
   }
-  header { border-bottom: 2px solid #e3120b; margin-bottom: 1.4em; padding-bottom: 0.8em; }
+  header { border-bottom: 2px solid ${site.accent}; margin-bottom: 1.4em; padding-bottom: 0.8em; }
   .site { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 9pt;
-          letter-spacing: 0.08em; text-transform: uppercase; color: #e3120b; }
+          letter-spacing: 0.08em; text-transform: uppercase; color: ${site.accent}; }
   h1 { font-size: 22pt; line-height: 1.25; margin: 0.3em 0 0.2em; }
   .meta { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 9.5pt; color: #666; }
   img, figure { max-width: 100%; height: auto; margin: 1em auto; display: block; }
@@ -367,7 +428,7 @@ try {
 </head>
 <body>
   <header>
-    <div class="site">${article.siteName}</div>
+    <div class="site">${site.name || article.siteName}</div>
     <h1>${article.title}</h1>
     <div class="meta">${[article.byline, dateStr].filter(Boolean).join(" · ")}</div>
   </header>
