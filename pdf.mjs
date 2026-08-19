@@ -557,15 +557,17 @@ try {
   for (const c of candidates) {
     const token = `[[CHART_${c.idx}]]`;
     if (!article.content.includes(token)) continue; // 本文外は除外
-    // マーカーが本文に残った=この画像は本文の中にある。冒頭画像だった場合は
-    // ここで正しい位置に差し込まれるので、ヘッダーへの挿入はしない。
-    if (c.isHero) heroInBody = true;
+    // 冒頭画像がここで本文に差し込まれた場合、ヘッダーには入れない(二重になるため)。
+    // ただしフラグを立てるのは画像が実際に本文へ入ったと確認できてからにする。
+    // マーカーが残っただけでは差し込みの成否は決まらず(取得失敗ならマーカーは空文字に
+    // なる)、先にフラグを立てるとヘッダー側のフォールバックまで潰して写真が消える。
     let dataUri = null;
     if (c.kind === "img" && c.src) {
       // Readabilityが既にこの画像を本文に残していれば二重挿入を防ぐ(静的グラフ記事対策)
       const key = fileKey(c.src);
       if (key && article.content.includes(key)) {
         article.content = article.content.split(token).join(""); // マーカーだけ除去
+        if (c.isHero) heroInBody = true; // 本文側に画像が残っている
         continue;
       }
       dataUri = await fetchAsDataUri(page, c.src);
@@ -586,7 +588,10 @@ try {
     }
     const replacement = dataUri ? `<img src="${dataUri}" alt="chart">` : "";
     article.content = article.content.split(token).join(replacement);
-    if (dataUri) rescued++;
+    if (dataUri) {
+      rescued++;
+      if (c.isHero) heroInBody = true; // 差し込めたときだけヘッダー側を抑止する
+    }
   }
   console.log(`グラフ救済: ${rescued}/${candidates.length}件`);
 
