@@ -31,9 +31,12 @@ const DEFAULT_SITE = {
   loginUrl: null,      // null なら --login の対象にできない
   accent: "#333333",
   chartFrame: /datawrapper|flourish|flo\.uri\.sh|infogram/i,
-  // 記事末尾(■以降)で落としたい、そのサイト特有の勧誘ブロックの言い回し。
+  // 本文の終わり以降で落としたい、そのサイト特有の勧誘ブロックの言い回し。
   // 汎用の勧誘パターン(sign up / subscriber-only / newsletter)は常に適用される。
   junkText: null,
+  // 本文の終わりを示す記号(Economistの ■ など)。位置の基準として最も正確なので
+  // 持っているサイトでは使う。null のサイトは「本文らしい最後の段落」で代用する。
+  bodyEndMark: null,
   // og:image を冒頭画像のフォールバックに使うか。既定は false —
   // og:image は「記事を代表する画像」であって「冒頭に表示されている画像」とは限らず、
   // 実測ではEconomistのgraphic-detail記事で本文1枚目のグラフのPNGが入っていた
@@ -51,6 +54,7 @@ const SITES = {
     // 紙版の号を宣伝するカード(表紙画像つきで1ページ丸ごと使う)。
     // 「This article appeared in the ... print edition」の行は出典情報なので残す。
     junkText: /discover stories from this section|explore the edition/i,
+    bodyEndMark: "■",
   },
   "ft.com": {
     name: "Financial Times",
@@ -325,7 +329,7 @@ try {
   // 音声プレーヤーとニュースレター勧誘はReadabilityが本文と判定してしまう位置にあり、
   // PDFに「Listen to this story / AI Narrated / 0:00 / 0:00」や購読案内が残る。
   // 抽出後の文字列置換は本文を巻き添えにしやすいので、抽出前にDOMから外す。
-  const cleaned = await page.evaluate((junkTextSrc) => {
+  const cleaned = await page.evaluate(({ junkTextSrc, bodyEndMark }) => {
     const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
     const out = { player: 0, promo: 0 };
 
@@ -357,30 +361,50 @@ try {
       out.player++;
     }
 
-    // 2) 末尾のニュースレター勧誘。本文中にも "sign up" は出うるので、必ず位置で限定する
-    //    — Economistは本文の終わりを ■ (U+25A0) で示すので、その後ろだけを対象にする。
-    //    __NEXT_DATA__ のJSONにも ■ が入っているため script/style は走査から外す。
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-      acceptNode: (nd) =>
-        nd.parentElement && /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(nd.parentElement.tagName)
-          ? NodeFilter.FILTER_REJECT
-          : NodeFilter.FILTER_ACCEPT,
-    });
-    let endNode = null;
-    let nd;
-    while ((nd = walker.nextNode())) if (nd.nodeValue.includes("■")) endNode = nd;
-    const endEl = endNode?.parentElement || null;
+    // 2) 末尾のニュースレター勧誘。本文中にも "sign up" は出うるので、必ず位置で限定する。
+    //    勧誘特有の言い回しに限定する。単に "newsletter" を含むだけの関連記事見出し
+    //    (「Plot Twist newsletter: ...」等)を巻き込まないため。
+    const patterns = [
+      "\\bsign up (?:to|for)\\b",
+      "subscriber[-\\s]only\\b",
+      "\\b(?:weekly|daily|monthly)\\b[^.]{0,40}\\bnewsletter\\b",
+    ];
+    if (junkTextSrc) patterns.push(junkTextSrc);
+    const PROMO = new RegExp(patterns.join("|"), "i");
+
+    // 位置の基準になる「本文の終わり」を決める。末尾マーク(Economistの ■)があれば
+    // それが最も正確。無い媒体(FT等)ではマークを待っても永久に来ないので、
+    // 本文らしい最後の段落で代用する。ここで諦めると除去そのものが起きず、
+    // 「SITESに1エントリ足せば動く」という前提が媒体ごとに崩れてしまう。
+    const endElFromMark = () => {
+      if (!bodyEndMark) return null;
+      // __NEXT_DATA__ のJSONにも ■ が入っているため script/style は走査から外す。
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+        acceptNode: (nd) =>
+          nd.parentElement && /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(nd.parentElement.tagName)
+            ? NodeFilter.FILTER_REJECT
+            : NodeFilter.FILTER_ACCEPT,
+      });
+      let endNode = null;
+      let nd;
+      while ((nd = walker.nextNode())) if (nd.nodeValue.includes(bodyEndMark)) endNode = nd;
+      return endNode?.parentElement || null;
+    };
+    // 最後の「まとまった散文の段落」を本文の終わりとみなす。勧誘文自体を基準にすると
+    // それが除去対象から外れてしまうので、PROMOに当たる段落は基準に採らない。
+    const endElFromProse = () => {
+      let last = null;
+      for (const p of document.querySelectorAll("p")) {
+        if (p.closest("nav, footer, aside, form")) continue;
+        const t = norm(p.textContent);
+        if (t.length < 200 || PROMO.test(t)) continue;
+        last = p;
+      }
+      return last;
+    };
+    const endEl = endElFromMark() || endElFromProse();
 
     if (endEl) {
-      // 勧誘特有の言い回しに限定する。単に "newsletter" を含むだけの関連記事見出し
-      // (「Plot Twist newsletter: ...」等)を巻き込まないため。
-      const patterns = [
-        "\\bsign up (?:to|for)\\b",
-        "subscriber[-\\s]only\\b",
-        "\\b(?:weekly|daily|monthly)\\b[^.]{0,40}\\bnewsletter\\b",
-      ];
-      if (junkTextSrc) patterns.push(junkTextSrc);
-      const PROMO = new RegExp(patterns.join("|"), "i");
       const hits = [];
       for (const el of document.querySelectorAll("p, div, section, aside")) {
         if (!(endEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
@@ -397,7 +421,7 @@ try {
       }
     }
     return out;
-  }, site.junkText?.source ?? null);
+  }, { junkTextSrc: site.junkText?.source ?? null, bodyEndMark: site.bodyEndMark ?? null });
   if (cleaned.player || cleaned.promo)
     console.log(`本文の残骸を除去: プレーヤー${cleaned.player}件 / 購読案内${cleaned.promo}件`);
 
