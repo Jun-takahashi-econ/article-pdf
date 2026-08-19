@@ -1,9 +1,7 @@
 # article-pdf
 
 [The Economist](https://www.economist.com/)や[Financial Times](https://www.ft.com/)の記事のURLをアプリに渡すと、ログイン済みブラウザで記事を開き、本文だけを抽出して
-テキストレイヤー付きの綺麗なPDFを出力するツールです（OCR不要）。
-PDFで保存→iPadのGoodNotes等からそのまま取り込めます。
-GoodNotes等だとメモ機能や翻訳機能が充実しているので、英語新聞の習慣化を無理なくできると思います。
+テキストレイヤー付きの綺麗なPDFを出力するツールです。
 webで記事を印刷するとレイアウトが大きく崩れてしまいますが、このアプリを使うとレイアウト崩れは発生しにくいのが特徴です。
 
 ## 仕組み
@@ -81,7 +79,7 @@ node pdf.mjs --login ft   # FTも使う場合（同じプロファイルに追�
 保存先を明示する場合はリポジトリ直下に `config.json` を作成:
 
 ```json
-{"outDir": "C:\\Users\\xxx\\OneDrive - 大学名\\ArticlePDF"}
+{"outDir": "C:\\Users\\xxx\\ArticlePDF"}
 ```
 
 `config.json` はマシンごとの設定なのでgit管理対象外（.gitignore済み）。PCごとに作成してください。
@@ -132,10 +130,6 @@ Macで `epdf <URL>` の一発にするには `~/.zshrc` に:
 ```bash
 alias epdf='node path/to/article-pdf/pdf.mjs'
 ```
-
-## GoodNotes連携
-
-OneDriveに出力されるので、iPadのGoodNotesからは「読み込む」→ OneDrive → ArticlePDF で取り込めます。
 
 ## トラブルシューティング
 
