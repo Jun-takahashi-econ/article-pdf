@@ -43,6 +43,9 @@ const DEFAULT_SITE = {
   // (og:image=20260620_WOT187.png ↔ 本文のiframe 20260620_WOC187)。無条件に採用すると
   // 冒頭にグラフが二重に出る。DOM から実表示画像を取れた場合はそちらを常に優先する。
   heroFromOg: false,
+  // 記事の背景色。PDFではページから読み取った色(本文の背後の色)を使い、読み取れなかった
+  // ときだけこの値を使う。null なら白。
+  background: null,
 };
 
 const SITES = {
@@ -65,6 +68,7 @@ const SITES = {
     // Flourish — ft.comのページ設定に useFlourish / useFlourishIFrame のフラグがある — と、
     // FT自身のグラフィックスホスト ig.ft.com に絞る。Datawrapper/Infogramは痕跡がないので外した。
     chartFrame: /ig\.ft\.com|flo\.uri\.sh|public\.flourish\.studio/i,
+    background: "#fff1e5", // FTの紙面色(ベージュ)
   },
 };
 
@@ -488,6 +492,31 @@ try {
     return { src: best.src, caption: best.cap, fromOg: false, top: best.top };
   }, 1500);
 
+  // ---- 記事の背景色(FTのベージュ等)をPDFでも再現する ----
+  // 本文の段落から親へたどり、最初に色が塗られている要素の背景色を使う。暗い色(ダークモード等)は
+  // PDFの黒い文字と合わないので使わない(null = 白)。
+  const background =
+    (await page.evaluate(() => {
+      const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+      const start =
+        [...document.querySelectorAll("p")].find(
+          (p) => !p.closest("nav, footer, aside") && norm(p.textContent).length >= 200
+        ) || document.body;
+      for (let el = start; el; el = el.parentElement) {
+        const m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+)(%?))?\s*\)$/i.exec(
+          getComputedStyle(el).backgroundColor
+        );
+        if (!m) continue;
+        const alpha = m[4] === undefined ? 1 : parseFloat(m[4]) / (m[5] ? 100 : 1);
+        if (alpha < 0.5) continue; // 透明 = その親の色が見えている
+        const [r, g, b] = [m[1], m[2], m[3]].map((v) => Math.round(parseFloat(v)));
+        const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        return luminance > 0.75 ? `rgb(${r}, ${g}, ${b})` : null;
+      }
+      return null;
+    })) || site.background;
+  if (background) console.log(`背景色: ${background}`);
+
   if (!hero.src && site.heroFromOg) {
     const og = await page.evaluate(
       () => document.querySelector('meta[property="og:image"]')?.getAttribute("content") || null
@@ -660,6 +689,8 @@ try {
 <base href="${url}">
 <style>
   @page { margin: 0; }
+  /* 記事ページの背景色。@page の余白が0なので(下の pdf() の margin より優先される)、ページの端まで塗られる */
+  ${background ? `html, body { background: ${background}; }` : ""}
   body {
     font-family: Georgia, "Times New Roman", serif;
     font-size: 12.5pt;

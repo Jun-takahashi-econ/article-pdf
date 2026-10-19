@@ -9,7 +9,9 @@ const HOST = "com.article_pdf.save";
 const id = location.hash.slice(1);
 const report = (msg) => chrome.runtime.sendMessage({ type: "render-result", id, ...msg });
 
-// A4・余白は pdf.mjs の renderPage.pdf() と同じ(単位はインチ)
+// A4・余白は pdf.mjs の renderPage.pdf() と同じ(単位はインチ)。ただしページ側のCSSに
+// @page { margin: 0 } があり、Chromeではそちらが優先されるので、実際の余白は0になる
+// (左右の余白は本文の幅を絞って作っている)。背景色がページの端まで塗られるのはこのため。
 const PRINT_OPTIONS = {
   paperWidth: 8.27,
   paperHeight: 11.7,
@@ -122,10 +124,7 @@ async function saveToDownloads(base64, filename) {
     data = await printToPdf(tabId);
   } catch (err) {
     // 管理ポリシー等でデバッガーが使えない環境では、印刷画面からの保存に切り替える。
-    // 印刷画面の余白は既定でCSSの @page に従うので、自動保存と同じ余白を指定し直す。
-    const style = document.createElement("style");
-    style.textContent = "@page { margin: 18mm 16mm; }";
-    document.head.appendChild(style);
+    // 印刷画面の余白も既定でCSSの @page に従うので、自動保存と同じ仕上がりになる。
     await report({ ok: false, fallback: true, error: String(err?.message || err) });
     await chrome.tabs.update(tabId, { active: true });
     window.print();

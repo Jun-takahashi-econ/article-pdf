@@ -15,6 +15,7 @@
     chartFrame: /datawrapper|flourish|flo\.uri\.sh|infogram/i,
     junkText: null,
     bodyEndMark: null,
+    background: null,
   };
   const SITES = {
     "economist.com": {
@@ -28,6 +29,7 @@
       name: "Financial Times",
       accent: "#0d7680",
       chartFrame: /ig\.ft\.com|flo\.uri\.sh|public\.flourish\.studio/i,
+      background: "#fff1e5",
     },
   };
   const resolveSite = (host) => {
@@ -149,6 +151,27 @@
     } finally {
       if (toastHost) toastHost.style.display = "";
     }
+  }
+
+  // 記事の背景色(FTのベージュ等)。本文の段落から親へたどり、最初に色が塗られている要素の
+  // 背景色を使う。暗い色(ダークモード等)はPDFの黒い文字と合わないので使わない(null = 白)。
+  function pageBackground() {
+    const start =
+      [...document.querySelectorAll("p")].find(
+        (p) => !p.closest("nav, footer, aside") && norm(p.textContent).length >= 200
+      ) || document.body;
+    for (let el = start; el; el = el.parentElement) {
+      const m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+)(%?))?\s*\)$/i.exec(
+        getComputedStyle(el).backgroundColor
+      );
+      if (!m) continue;
+      const alpha = m[4] === undefined ? 1 : parseFloat(m[4]) / (m[5] ? 100 : 1);
+      if (alpha < 0.5) continue; // 透明 = その親の色が見えている
+      const [r, g, b] = [m[1], m[2], m[3]].map((v) => Math.round(parseFloat(v)));
+      const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      return luminance > 0.75 ? `rgb(${r}, ${g}, ${b})` : null;
+    }
+    return null;
   }
 
   // 複製したDOMと実ページの要素を対応づける。cloneNode は要素を同じ順序で複製するので、
@@ -311,13 +334,15 @@
     return list;
   }
 
-  const pageHtml = (site, article, dateStr, heroHtml) => `<!DOCTYPE html>
+  const pageHtml = (site, article, dateStr, heroHtml, background) => `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>${esc(article.title)}</title>
 <style>
   @page { margin: 0; }
+  /* 記事ページの背景色。@page の余白が0なので、ページの端まで塗られる */
+  ${background ? `html, body { background: ${background}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }` : ""}
   body {
     font-family: Georgia, "Times New Roman", serif;
     font-size: 12.5pt;
@@ -380,6 +405,7 @@
       throw new Error("サイトの確認画面が表示されています。画面の指示に従って確認を済ませ、記事が表示されてからもう一度押してください。");
     }
     toast("記事を読み込んでいます…");
+    const background = pageBackground() || site.background;
 
     // 遅延読み込み対策: ページ全体をスクロールして画像/グラフの読み込みを誘発する
     for (let y = 400; ; y += 400) {
@@ -521,9 +547,9 @@
 
     return {
       ok: true,
-      html: pageHtml(site, article, dateStr, heroHtml),
+      html: pageHtml(site, article, dateStr, heroHtml, background),
       filename,
-      stats: { charts: rescued, chartCandidates: list.length, hero: heroStatus, ...cleaned },
+      stats: { charts: rescued, chartCandidates: list.length, hero: heroStatus, background, ...cleaned },
     };
   }
 
