@@ -1,6 +1,11 @@
 // render.js — 整形済みHTMLをこのタブ(拡張機能のページ)に流し込み、自分自身をPDFに印刷して保存する。
 // 印刷に使うデバッガー(DevToolsプロトコル)はこのタブにだけつなぐので、記事のタブには一切つながらない。
+//
+// 保存先は pdf.mjs と同じ(OneDrive/ArticlePDF 等)。拡張機能はダウンロードフォルダの中にしか
+// 書き込めないので、PC側の受け口(native-host/host.mjs)に書き込みを任せる。受け口が使えない
+// PC(未登録、管理ポリシーで禁止)ではダウンロードフォルダに保存し、その理由を伝える。
 
+const HOST = "com.article_pdf.save";
 const id = location.hash.slice(1);
 const report = (msg) => chrome.runtime.sendMessage({ type: "render-result", id, ...msg });
 
@@ -48,7 +53,21 @@ function waitForDownload(downloadId) {
   });
 }
 
-async function savePdf(base64, filename) {
+async function saveViaHost(base64, filename) {
+  const res = await chrome.runtime.sendNativeMessage(HOST, { type: "save", filename, data: base64 });
+  if (!res?.ok) throw new Error(res?.error || "受け口から応答がありません");
+  return res.path;
+}
+
+// 受け口が使えない理由を、次に何をすればよいか分かる言葉にする
+function hostProblem(err) {
+  const m = String(err?.message || err);
+  if (/not found/i.test(m)) return "このPCはOneDrive保存の設定がまだです(native-host/install.mjs を実行してください)";
+  if (/forbidden/i.test(m)) return "このPCの管理ポリシーで、OneDriveへの直接保存が止められています";
+  return `OneDriveに保存できませんでした(${m})`;
+}
+
+async function saveToDownloads(base64, filename) {
   const bin = atob(base64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -113,8 +132,15 @@ async function savePdf(base64, filename) {
     return;
   }
   try {
-    const path = await savePdf(data, job.filename);
-    await report({ ok: true, path, failedImages });
+    let path;
+    let note = "";
+    try {
+      path = await saveViaHost(data, job.filename);
+    } catch (err) {
+      path = await saveToDownloads(data, job.filename);
+      note = `${hostProblem(err)}。代わりにダウンロードフォルダに保存しました。`;
+    }
+    await report({ ok: true, path, note, failedImages });
   } catch (err) {
     await report({ ok: false, error: String(err?.message || err) });
   }
