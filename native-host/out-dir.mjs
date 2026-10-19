@@ -1,8 +1,8 @@
 /**
- * out-dir.mjs — PDFの保存先を決める。pdf.mjs と、拡張機能から受け取ったPDFを書き込む
- * native-host/host.mjs で共通(どちらで保存しても同じフォルダに入るように)。
+ * out-dir.mjs — 受け口 host.mjs がPDFの保存先を決める(install.mjs の「保存先:」表示も host.mjs 経由)。
  *
  * 優先順位: 環境変数 ARTICLE_PDF_OUT > config.json の outDir > OneDrive自動検出 > ~/Documents/ArticlePDF
+ * config.json はリポジトリ直下に置く(PCごとの設定なのでgit管理対象外)。
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -24,11 +24,11 @@ function detectOneDrive() {
   return null;
 }
 
-// config.json(プロジェクト直下、任意)で保存先を明示できる: {"outDir": "/path/to/folder"}
+// config.json(リポジトリ直下、任意)で保存先を明示できる: {"outDir": "/path/to/folder"}
 function readConfig() {
-  const p = path.join(path.dirname(fileURLToPath(import.meta.url)), "config.json");
+  const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
   try {
-    return JSON.parse(readFileSync(p, "utf8"));
+    return JSON.parse(readFileSync(path.join(repoRoot, "config.json"), "utf8"));
   } catch {
     return {};
   }

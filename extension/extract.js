@@ -1,20 +1,32 @@
 // extract.js — 記事タブの中(拡張機能専用の隔離された実行環境)で動き、本文とグラフを抜き出して
-// PDF用のHTMLを組み立てる。処理内容は pdf.mjs の抽出部分の移植。
+// PDF用のHTMLを組み立てる。本文の抽出はReadabilityに任せ、Readabilityが落としてしまう
+// グラフ・冒頭写真の救済と、本文に紛れ込む音声プレーヤー・勧誘の除去をここで行う。
 //
-// pdf.mjs との違いは、開いているページを書き換えないこと。拡張機能では読者が見ている
-// タブそのものが対象なので、マーカー([[CHART_0]])の挿入や音声プレーヤーの除去を実ページに
-// 行うと読書画面が崩れる。位置・大きさの計測(レイアウトが要る)だけを実ページで行い、
-// 書き換えはすべて複製したDOMに対して行う。
+// 開いているページは書き換えない。読者が見ているタブそのものが対象なので、マーカー
+// ([[CHART_0]])の挿入や音声プレーヤーの除去を実ページに行うと読書画面が崩れる。
+// 位置・大きさの計測(レイアウトが要る)だけを実ページで行い、書き換えはすべて複製したDOMに行う。
 (() => {
   if (globalThis.__articlePdf) return;
 
-  // ---- サイト定義(pdf.mjs の SITES と同じ内容。ログイン関連は拡張機能では不要) ----
+  // ---- サイト定義 ----
+  // サイト固有の知識はここだけに置く。新しい媒体はエントリを1つ足せば動く。
+  // 未定義サイトでも DEFAULT_SITE で汎用ツールとして成立する(本文抽出はReadability任せ)。
+  //
+  // og:image は冒頭画像の代わりに使わない。og:image は「記事を代表する画像」であって
+  // 「冒頭に表示されている画像」とは限らず、実測ではEconomistのgraphic-detail記事で
+  // 本文1枚目のグラフのPNGが入っていた(og:image=20260620_WOT187.png ↔ 本文のiframe 20260620_WOC187)。
+  // 使うと冒頭にグラフが二重に出る。
   const DEFAULT_SITE = {
-    name: null,
+    name: null, // null なら Readability の siteName を使う
     accent: "#333333",
     chartFrame: /datawrapper|flourish|flo\.uri\.sh|infogram/i,
+    // 本文の終わり以降で落としたい、そのサイト特有の勧誘ブロックの言い回し。
+    // 汎用の勧誘パターン(sign up / subscriber-only / newsletter)は常に適用される。
     junkText: null,
+    // 本文の終わりを示す記号(Economistの ■ など)。位置の基準として最も正確なので
+    // 持っているサイトでは使う。null のサイトは「本文らしい最後の段落」で代用する。
     bodyEndMark: null,
+    // 記事の背景色。ページから読み取れなかったときだけ使う(pageBackground 参照)。null なら白。
     background: null,
   };
   const SITES = {
@@ -22,14 +34,20 @@
       name: "The Economist",
       accent: "#e3120b",
       chartFrame: /infographics\.economist\.com|interactive\.economist\.com|datawrapper/i,
+      // 紙版の号を宣伝するカード(表紙画像つきで1ページ丸ごと使う)。
+      // 「This article appeared in the ... print edition」の行は出典情報なので残す。
       junkText: /discover stories from this section|explore the edition/i,
       bodyEndMark: "■",
     },
     "ft.com": {
       name: "Financial Times",
       accent: "#0d7680",
+      // 実機で確認した範囲では、FTの図表は figure.n-content-image の静的画像で配信されており
+      // グラフのiframeは出てこなかった(静的画像は figure の経路で拾える)。iframeを使う経路は
+      // Flourish — ft.comのページ設定に useFlourish / useFlourishIFrame のフラグがある — と、
+      // FT自身のグラフィックスホスト ig.ft.com に絞る。Datawrapper/Infogramは痕跡がないので外した。
       chartFrame: /ig\.ft\.com|flo\.uri\.sh|public\.flourish\.studio/i,
-      background: "#fff1e5",
+      background: "#fff1e5", // FTの紙面色(ベージュ)
     },
   };
   const resolveSite = (host) => {
@@ -60,9 +78,11 @@
     u.startsWith("data:") ||
     /\b(blank|placeholder|spacer|1x1|transparent)(?:\.|\/|\?|#|$)/i.test(u);
 
-  // srcset から最大解像度の候補URLを取り出す。候補の区切りは「カンマ + 空白」で、
-  // EconomistのCloudflare画像URL(/cdn-cgi/image/width=1424,quality=100,format=auto/…)は
-  // URL自体にカンマを含むため単純な split(",") は使えない(pdf.mjs の同名関数を参照)。
+  // srcset から最大解像度の候補URLを取り出す(グラフは高解像度の方が読みやすい)。
+  // 候補の区切りは「カンマ + 空白」。単純な split(",") は使えない — EconomistのCloudflare
+  // 画像URL(/cdn-cgi/image/width=1424,quality=100,format=auto/…)はURL自体にカンマを含むため、
+  // 1つのURLが断片に割れて "format=auto/…/FNC219.png" のような壊れた相対URLになり、
+  // 404 → Next.jsが placeholder.svg に差し替え、グラフが白紙で出力される(過去の不具合の根本原因)。
   const largestFromSrcset = (srcset) => {
     if (!srcset) return null;
     let best = null;
@@ -76,7 +96,11 @@
     return best;
   };
 
-  // 認証付きを先に試し、別ホストのCDN(FTの images.ft.com 等)で弾かれたら認証なしで取り直す。
+  // 画像は記事ページの中で取得してデータURI化する(PDFへの印刷は拡張機能のタブで行うので、
+  // そこから読み込ませるとCDNが認証やRefererを見て弾くことがある)。
+  // 認証付きを先に試す(Economistの画像は記事と同一オリジンなのでこれで通る)。FTのように画像が
+  // 別ホストのCDN(images.ft.com)にある場合、認証付きリクエストにはCORSが許可されず fetch が
+  // 例外になるが、認証なしなら許可される。両方試す。
   const toDataUri = (blob) =>
     new Promise((resolve) => {
       const fr = new FileReader();
@@ -135,7 +159,7 @@
     el.scrollIntoView({ block: tall ? "start" : "center" });
     // 画面上部に固定表示されるヘッダーと重ならないよう、縦長の要素は少し下げる
     if (tall) window.scrollBy(0, -80);
-    await sleep(600); // iframe内グラフの描画安定待ち(pdf.mjs と同じ)
+    await sleep(600); // iframe内グラフの描画安定待ち
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return null;
     if (toastHost) toastHost.style.display = "none"; // 進捗表示が写り込まないように
@@ -188,13 +212,19 @@
   }
 
   // ---- 本文に混入する非本文要素を(複製DOMから)除去 ----
-  // 音声プレーヤーとニュースレター勧誘はReadabilityが本文と判定してしまう位置にある。
-  // 詳しい判断基準は pdf.mjs の同じ処理のコメントを参照。
+  // 音声プレーヤーとニュースレター勧誘はReadabilityが本文と判定してしまう位置にあり、
+  // PDFに「Listen to this story / AI Narrated / 0:00 / 0:00」や購読案内が残る。
+  // 抽出後の文字列置換は本文を巻き添えにしやすいので、抽出前にDOMから外す。
   function stripJunk(doc, site) {
     const out = { player: 0, promo: 0 };
 
+    // 1) 音声プレーヤー。Economistは <audio> と「Listen to this story」「AI Narrated」の
+    //    ラベルを小さなコンテナにまとめている。再生時間表示(0:00 / 0:00)はネイティブ
+    //    コントロールのshadow DOM由来なので、<audio>ごと外せば一緒に消える。
     for (const media of doc.querySelectorAll("audio, video")) {
       let target = media;
+      // ラベルを巻き取れるところまで親をたどる。本文を含む器は絶対に消さないため、
+      // 「<p>を含まない」「テキストが十分短い」の両方を満たす間だけ上がる。
       for (let i = 0; i < 4; i++) {
         const p = target.parentElement;
         if (!p || /^(BODY|MAIN|ARTICLE|SECTION)$/.test(p.tagName)) break;
@@ -205,15 +235,20 @@
       target.remove();
       out.player++;
     }
+    // <audio>を持たないプレーヤー実装向けの保険。ラベル完全一致の最小要素だけを消す
+    // (部分一致で親ごと消すと本文が飛ぶ)。
     const LABEL = /^(listen to this story|ai[\s-]*narrated)$/i;
     for (const el of doc.querySelectorAll("figcaption, span, div, p, button")) {
       if (!el.isConnected) continue;
       if (!LABEL.test(norm(el.textContent))) continue;
-      if ([...el.children].some((c) => LABEL.test(norm(c.textContent)))) continue;
+      if ([...el.children].some((c) => LABEL.test(norm(c.textContent)))) continue; // 最小要素に限定
       el.remove();
       out.player++;
     }
 
+    // 2) 末尾のニュースレター勧誘。本文中にも "sign up" は出うるので、必ず位置で限定する。
+    //    勧誘特有の言い回しに限定する。単に "newsletter" を含むだけの関連記事見出し
+    //    (「Plot Twist newsletter: ...」等)を巻き込まないため。
     const patterns = [
       "\\bsign up (?:to|for)\\b",
       "subscriber[-\\s]only\\b",
@@ -222,8 +257,13 @@
     if (site.junkText) patterns.push(site.junkText.source);
     const PROMO = new RegExp(patterns.join("|"), "i");
 
+    // 位置の基準になる「本文の終わり」を決める。末尾マーク(Economistの ■)があれば
+    // それが最も正確。無い媒体(FT等)ではマークを待っても永久に来ないので、
+    // 本文らしい最後の段落で代用する。ここで諦めると除去そのものが起きず、
+    // 「SITESに1エントリ足せば動く」という前提が媒体ごとに崩れてしまう。
     const endElFromMark = () => {
       if (!site.bodyEndMark) return null;
+      // __NEXT_DATA__ のJSONにも ■ が入っているため script/style は走査から外す。
       const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
         acceptNode: (nd) =>
           nd.parentElement && /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(nd.parentElement.tagName)
@@ -235,6 +275,8 @@
       while ((nd = walker.nextNode())) if (nd.nodeValue.includes(site.bodyEndMark)) endNode = nd;
       return endNode?.parentElement || null;
     };
+    // 最後の「まとまった散文の段落」を本文の終わりとみなす。勧誘文自体を基準にすると
+    // それが除去対象から外れてしまうので、PROMOに当たる段落は基準に採らない。
     const endElFromProse = () => {
       let last = null;
       for (const p of doc.querySelectorAll("p")) {
@@ -256,6 +298,7 @@
         if (!t || t.length > 400 || !PROMO.test(t)) continue;
         hits.push(el);
       }
+      // 勧誘カードは入れ子になっているので、一番外側だけを消してカードごと落とす
       for (const el of hits) {
         if (hits.some((o) => o !== el && o.contains(el))) continue;
         el.remove();
@@ -266,12 +309,18 @@
   }
 
   // ---- 冒頭画像(hero)の候補 ----
-  // Readabilityは冒頭写真を本文の外に置くため、本文とは独立に探す(pdf.mjs 参照)。
+  // Readabilityは「最もスコアの高い1つの部分木」を本文とするため、スコア源になる
+  // テキストを持たない冒頭写真は本文の外に置かれ、マーカー方式では拾えない
+  // (実測: Economistの冒頭写真のfigureは本文コンテナとは別サブツリーにある)。
+  // そこでマーカー方式とは独立に探し、PDFではヘッダー直後へ差し込む。
   // 除去対象の中にある画像を選ばないよう、候補を上から順に返し、呼び出し側で絞る。
   function heroCandidates(realOf) {
+    // figcaptionは説明と出典を別要素に分けていることがあり、textContentをそのまま読むと
+    // 区切りが失われて "…webPhotograph: Reuters" のように繋がる。ブロック単位で読んで繋ぐ。
     const captionOf = (fig) => {
       let fc = fig?.querySelector("figcaption");
       if (!fc) return "";
+      // 単なるラッパーで包まれているだけなら中に降りる
       for (let i = 0; i < 3 && fc.children.length === 1 && fc.children[0].textContent === fc.textContent; i++)
         fc = fc.children[0];
       const parts = [...fc.childNodes]
@@ -279,6 +328,8 @@
         .filter(Boolean);
       return parts.join(" / ") || norm(fc.textContent);
     };
+    // 冒頭画像は見出しの近くにある。本文の途中に出てくる図表を拾わないよう縦位置で絞る
+    // (実測: 冒頭写真は見出しの240〜300px下、本文1枚目のグラフは1300px以上下)。
     const h1 = document.querySelector("h1");
     const limit = (h1 ? docTop(h1) : 0) + 1500;
     const list = [];
@@ -286,11 +337,13 @@
       if (img.closest("nav, footer, aside")) continue;
       if (img.closest('[class*="masthead" i], [class*="advert" i], [class*="related" i]')) continue;
       const r = img.getBoundingClientRect();
-      if (r.width < 300 || r.height < 150) continue;
+      if (r.width < 300 || r.height < 150) continue; // ロゴ・アイコン・サムネイルを除外
       const top = docTop(img);
       if (top > limit) continue;
       const src = realOf(img);
       if (!src) continue;
+      // 「Chart: ...」等のキャプションを持つものは図表。冒頭画像として扱わない
+      // (グラフ候補の側が本文の正しい位置に差し込む)。
       const cap = captionOf(img.closest("figure"));
       if (/^(chart|map|table|graphic|figure)\s*:/i.test(cap)) continue;
       list.push({ img, src, top, cap });
@@ -299,8 +352,12 @@
   }
 
   // ---- グラフ候補 ----
-  // Readabilityはiframeや図を本文ではないと判断して落とすため、各候補の直前にマーカー段落を
-  // 入れておき、抽出後にマーカーを画像へ置き換える(pdf.mjs 参照)。ここでは候補を集めるだけ。
+  // The Economistのグラフは多くが infographics.economist.com の iframe、または <figure> 内の画像。
+  // Readabilityはこれらを「本文ではない」と判断して削除してしまう(本文だけ残りグラフが消える)。
+  // そこで各グラフ候補の直前に一意なマーカー段落を挿入する。マーカー(テキスト)はReadabilityに
+  // 残るので、抽出後に本文中のマーカーを実際のグラフ画像へ置き換えれば、正しい位置に差し込める。
+  // 本文外(広告・関連記事)の候補はマーカーが残らないため、自動的に除外される。
+  // ここでは候補を集めるだけ(マーカーの挿入は複製DOMに対して行う)。
   function chartCandidates(chartFrame, realOf) {
     const list = [];
     const marked = new Set();
@@ -312,11 +369,13 @@
       marked.add(el);
       list.push({ el, kind, src: src || null });
     };
+    // インタラクティブ・グラフ(iframe埋め込み)
     for (const f of document.querySelectorAll("iframe")) {
       const s = f.getAttribute("src") || "";
       const r = f.getBoundingClientRect();
       if (chartFrame.test(s) && r.width >= 200 && r.height >= 120) mark(f, "shot", s);
     }
+    // 静的グラフ(figure内の画像)
     for (const fig of document.querySelectorAll("figure")) {
       if (insideMarked(fig)) continue;
       const r = fig.getBoundingClientRect();
@@ -324,8 +383,10 @@
       const img = fig.querySelector("img");
       const src = img && realOf(img);
       if (src) mark(fig, "img", src);
+      // 実URLが取れない画像グラフ(プレースホルダのまま等)やSVG/canvasは、表示をスクショして救済
       else if (img || fig.querySelector("svg, canvas")) mark(fig, "shot", null);
     }
+    // figure外の大きな単独SVG/canvasチャート
     for (const el of document.querySelectorAll("svg, canvas")) {
       if (el.closest("figure") || insideMarked(el)) continue;
       const r = el.getBoundingClientRect();
@@ -358,9 +419,11 @@
   h1 { font-size: 22pt; line-height: 1.25; margin: 0.3em 0 0.2em; }
   .meta { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 9.5pt; color: #666; }
   img, figure { max-width: 100%; height: auto; margin: 1em auto; display: block; }
+  /* グラフが大きくてもページ境界で途切れず、1ページに収まるよう調整 */
   img, figure, svg { break-inside: avoid; page-break-inside: avoid; }
   img { max-height: 230mm; object-fit: contain; }
   figcaption { font-size: 9.5pt; color: #666; text-align: center; }
+  /* 冒頭画像は本文の図表より控えめに。1ページ目が写真で埋まらないよう高さを抑える */
   figure.hero { margin: 0 0 1.6em; }
   figure.hero img { width: 100%; max-height: 120mm; object-fit: contain; margin: 0; }
   figure.hero figcaption { font-size: 9pt; color: #666; text-align: left; margin-top: 0.4em; }
@@ -468,11 +531,17 @@
       byline: parsed.byline || "",
       content: parsed.content,
       siteName: parsed.siteName || location.hostname,
-      // <time datetime> を最優先(pdf.mjs と同じ優先順位)
+      // <time datetime> を最優先。無い場合は Readability が article:published_time / JSON-LD から
+      // 拾った publishedTime を使う(<time>の表示文字列は "3 hours ago" 等になりうるので最後の手段)。
       date: time?.getAttribute("datetime") || parsed.publishedTime || time?.textContent || "",
     };
 
     // ---- 本文に残ったマーカーを実際のグラフ画像に置き換える ----
+    // マーカーが本文に残っている候補=本文内のグラフ。これらだけを画像化して差し込む。
+    // 冒頭画像がここで本文に差し込まれた場合、ヘッダーには入れない(二重になるため)。
+    // ただしその判定は画像が実際に本文へ入ったと確認できてからにする。マーカーが残っただけでは
+    // 差し込みの成否は決まらず(取得失敗ならマーカーは空文字になる)、先に判定すると
+    // ヘッダー側のフォールバックまで潰して写真が消える。
     let rescued = 0;
     let heroInBody = false;
     const inBody = list.filter((c) => article.content.includes(`[[CHART_${c.idx}]]`));
@@ -534,7 +603,7 @@
       }
     }
 
-    // ファイル名は YYYY-MM-DD_slug.pdf(pdf.mjs と同じ形式)
+    // ファイル名は YYYY-MM-DD_slug.pdf に揃えたいので、ISO形式でない日付は採用しない
     const rawDate = article.date || "";
     const isoDate = /^\d{4}-\d{2}-\d{2}/.test(rawDate) ? rawDate.slice(0, 10) : "";
     const dateStr = isoDate || rawDate.slice(0, 40);

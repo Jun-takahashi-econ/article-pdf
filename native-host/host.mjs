@@ -1,5 +1,6 @@
 /**
- * host.mjs — 拡張機能から受け取ったPDFを、pdf.mjs と同じ保存先(OneDrive/ArticlePDF 等)に書き込む受け口。
+ * host.mjs — 拡張機能から受け取ったPDFを保存先(config.json の outDir。通常は OneDrive/ArticlePDF)に
+ * 書き込む受け口。
  *
  * ブラウザの拡張機能はダウンロードフォルダの中にしか書き込めないため、Chrome/Edge の
  * Native Messaging でこのスクリプトを起動してもらい、書き込みだけを任せる。
@@ -12,7 +13,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { resolveOutDir } from "../out-dir.mjs";
+import { resolveOutDir } from "./out-dir.mjs";
 
 function handle(msg) {
   try {
@@ -24,7 +25,7 @@ function handle(msg) {
     const outDir = resolveOutDir();
     mkdirSync(outDir, { recursive: true });
     const outPath = path.join(outDir, name);
-    // 同じ記事を保存し直したときは上書きする(pdf.mjs と同じ)
+    // 同じ記事を保存し直したときは上書きする(同じ記事のPDFが増えていかないように)
     writeFileSync(outPath, Buffer.from(String(msg.data || ""), "base64"));
     return { ok: true, path: outPath };
   } catch (err) {

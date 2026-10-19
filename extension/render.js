@@ -1,17 +1,17 @@
 // render.js — 整形済みHTMLをこのタブ(拡張機能のページ)に流し込み、自分自身をPDFに印刷して保存する。
 // 印刷に使うデバッガー(DevToolsプロトコル)はこのタブにだけつなぐので、記事のタブには一切つながらない。
 //
-// 保存先は pdf.mjs と同じ(OneDrive/ArticlePDF 等)。拡張機能はダウンロードフォルダの中にしか
-// 書き込めないので、PC側の受け口(native-host/host.mjs)に書き込みを任せる。受け口が使えない
-// PC(未登録、管理ポリシーで禁止)ではダウンロードフォルダに保存し、その理由を伝える。
+// 保存先は config.json の outDir(通常は OneDrive/ArticlePDF)。拡張機能はダウンロードフォルダの
+// 中にしか書き込めないので、PC側の受け口(native-host/host.mjs)に書き込みを任せる。受け口が
+// 使えないPC(未登録、管理ポリシーで禁止)ではダウンロードフォルダに保存し、その理由を伝える。
 
 const HOST = "com.article_pdf.save";
 const id = location.hash.slice(1);
 const report = (msg) => chrome.runtime.sendMessage({ type: "render-result", id, ...msg });
 
-// A4・余白は pdf.mjs の renderPage.pdf() と同じ(単位はインチ)。ただしページ側のCSSに
-// @page { margin: 0 } があり、Chromeではそちらが優先されるので、実際の余白は0になる
-// (左右の余白は本文の幅を絞って作っている)。背景色がページの端まで塗られるのはこのため。
+// A4(単位はインチ)。余白の値も渡しているが、ページ側のCSSに @page { margin: 0 } があり、
+// Chromeではそちらが優先されるので、実際の余白は0になる(左右の余白は本文の幅を絞って
+// 作っている)。背景色がページの端まで塗られるのはこのため。
 const PRINT_OPTIONS = {
   paperWidth: 8.27,
   paperHeight: 11.7,
@@ -109,7 +109,7 @@ async function saveToDownloads(base64, filename) {
           if (img.complete) return resolve();
           img.addEventListener("load", resolve, { once: true });
           img.addEventListener("error", resolve, { once: true });
-          setTimeout(resolve, 8000); // 1枚あたり最大8秒(pdf.mjs と同じ)
+          setTimeout(resolve, 8000); // 1枚あたり最大8秒(1枚の失敗で全体を止めない)
         })
     )
   );
