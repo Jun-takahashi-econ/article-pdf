@@ -28,6 +28,15 @@
     bodyEndMark: null,
     // 記事の背景色。ページから読み取れなかったときだけ使う(pageBackground 参照)。null なら白。
     background: null,
+    // ---- 抽出した本文の後始末(cleanContent)。Readabilityが本文と一緒に拾ってしまう部品を落とす ----
+    // 記事名の後ろに付くサイト名(<title>由来でPDFの見出しに出てしまうもの)
+    titleSuffix: null,
+    // この見出しから後ろは本文ではない(おすすめ記事の一覧など)。見出しごと後ろを丸ごと落とす
+    cutFrom: null,
+    // 関連記事の見出し。見出しと直後のリンク一覧を落とす(本文の途中にあっても後ろの本文は残す)
+    relatedHeading: null,
+    // 本文に挟まる非本文の部品。要素の文字列全体と照合し、当たった最小の要素を落とす
+    dropBlocks: [],
   };
   const SITES = {
     "economist.com": {
@@ -48,6 +57,22 @@
       // FT自身のグラフィックスホスト ig.ft.com に絞る。Datawrapper/Infogramは痕跡がないので外した。
       chartFrame: /ig\.ft\.com|flo\.uri\.sh|public\.flourish\.studio/i,
       background: "#fff1e5", // FTの紙面色(ベージュ)
+    },
+    "nikkei.com": {
+      name: "日本経済新聞",
+      // 実際のPDF(2026-10)で本文の後ろに混入していたもの: 【関連記事】のリンク一覧、
+      // 話題のまとめページへの誘導文、「こちらもおすすめ(自動検索)」、ハッシュタグ、
+      // 「読んだ記事をもとにおすすめ」と動画解説。先頭には配信日時と[会員限定記事]の行。
+      titleSuffix: /\s*[-|｜]\s*日本経済新聞$/,
+      cutFrom: /^(こちらもおすすめ|読んだ記事をもとにおすすめ)/,
+      relatedHeading: /^(【関連記事】|▼?関連記事)$/,
+      dropBlocks: [
+        // 配信日時(日付はPDFの見出しに出す)。後ろに [会員限定記事] や (…更新) が付くことがある
+        /^\d{4}年\d{1,2}月\d{1,2}日\s*\d{1,2}:\d{2}(\s*[[(（][^\])）]*[\])）])*$/,
+        /^\[会員限定記事\]$/,
+        /(ニュース|記事)をまとめています。?$/, // 話題のまとめページへの誘導文
+        /^(#[^\s#]+\s*)+$/, // ハッシュタグ
+      ],
     },
   };
   const resolveSite = (host) => {
@@ -308,6 +333,76 @@
     return out;
   }
 
+  // ---- 抽出した本文の後始末 ----
+  // Readabilityは本文の器にまとめて置かれた部品(関連記事の一覧、おすすめ欄など)を本文として
+  // 拾うことがある。抽出後の本文に対して、サイト定義の規則で落とす。マーカー([[CHART_n]])の
+  // 置き換えより前に行うので、落とした範囲の画像は取得も撮影もしない。
+  const squash = (s) => (s || "").replace(/\s+/g, "");
+  function cleanContent(html, site, title) {
+    const holder = document.createElement("template");
+    holder.innerHTML = html;
+    const root = holder.content;
+    const all = () => [...root.querySelectorAll("*")];
+    const alive = (el) => root.contains(el);
+    // 要素を落とした後、文字も画像も残らなくなった親もたどって落とす
+    const removeWithEmptyParents = (el) => {
+      let parent = el.parentElement;
+      el.remove();
+      while (parent && !norm(parent.textContent) && !parent.querySelector("img, svg, canvas, picture, video")) {
+        const up = parent.parentElement;
+        parent.remove();
+        parent = up;
+      }
+    };
+
+    // 1) この見出しから後ろは本文ではない。見出しらしい短い要素に限る(本文の段落は対象外)
+    if (site.cutFrom) {
+      const mark = all().find((el) => {
+        const t = norm(el.textContent);
+        return t.length <= 40 && site.cutFrom.test(t);
+      });
+      if (mark) {
+        for (let el = mark; el && el !== root; el = el.parentNode) {
+          while (el.nextSibling) el.nextSibling.remove();
+        }
+        removeWithEmptyParents(mark);
+      }
+    }
+
+    // 2) 関連記事の見出しと、直後のリンク一覧(箇条書き、または「・」で始まる行)
+    if (site.relatedHeading) {
+      for (const el of all()) {
+        if (!alive(el) || !site.relatedHeading.test(norm(el.textContent))) continue;
+        let next = el.nextElementSibling;
+        while (next && (/^(UL|OL)$/.test(next.tagName) || /^・/.test(norm(next.textContent)))) {
+          const after = next.nextElementSibling;
+          next.remove();
+          next = after;
+        }
+        removeWithEmptyParents(el);
+      }
+    }
+
+    // 3) 非本文の部品。外側の要素ごと落とすと隣の本文を巻き込みうるので、当たった最小の要素を落とす
+    for (const re of site.dropBlocks) {
+      const hits = all().filter((el) => {
+        const t = norm(el.textContent);
+        return t && t.length <= 200 && re.test(t);
+      });
+      for (const el of hits) {
+        if (hits.some((o) => o !== el && el.contains(o))) continue;
+        if (alive(el)) removeWithEmptyParents(el);
+      }
+    }
+
+    // 4) 本文の先頭に記事の見出しが残っていれば落とす(PDFの見出しと二重になる)。英語の記事は
+    //    Readabilityが落とすが、日本語は単語に分けられず似ているかの判定が効かないため残る。
+    const firstHeading = root.querySelector("h1, h2");
+    if (firstHeading && squash(firstHeading.textContent) === squash(title)) removeWithEmptyParents(firstHeading);
+
+    return holder.innerHTML;
+  }
+
   // ---- 冒頭画像(hero)の候補 ----
   // Readabilityは「最もスコアの高い1つの部分木」を本文とするため、スコア源になる
   // テキストを持たない冒頭写真は本文の外に置かれ、マーカー方式では拾えない
@@ -526,8 +621,9 @@
       throw new Error("本文を抽出できませんでした。記事が全文表示されているか(ログイン状態)を確認してください。");
     }
     const time = document.querySelector("time");
+    const title = site.titleSuffix ? parsed.title.replace(site.titleSuffix, "") : parsed.title;
     const article = {
-      title: parsed.title,
+      title,
       byline: parsed.byline || "",
       content: parsed.content,
       siteName: parsed.siteName || location.hostname,
@@ -535,6 +631,8 @@
       // 拾った publishedTime を使う(<time>の表示文字列は "3 hours ago" 等になりうるので最後の手段)。
       date: time?.getAttribute("datetime") || parsed.publishedTime || time?.textContent || "",
     };
+
+    article.content = cleanContent(article.content, site, article.title);
 
     // ---- 本文に残ったマーカーを実際のグラフ画像に置き換える ----
     // マーカーが本文に残っている候補=本文内のグラフ。これらだけを画像化して差し込む。
@@ -607,9 +705,10 @@
     const rawDate = article.date || "";
     const isoDate = /^\d{4}-\d{2}-\d{2}/.test(rawDate) ? rawDate.slice(0, 10) : "";
     const dateStr = isoDate || rawDate.slice(0, 40);
+    // 日本語のタイトルも残す(英数字だけにすると日経の記事がすべて「article」になり、同じ日の記事が上書きされる)
     const slug = article.title
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/[^\p{L}\p{N}]+/gu, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 80);
     const filename = `${isoDate || new Date().toISOString().slice(0, 10)}_${slug || "article"}.pdf`;

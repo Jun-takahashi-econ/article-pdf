@@ -75,13 +75,18 @@ async function saveToDownloads(base64, filename) {
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   // data: URL はサイズ上限に当たりうるので、このページで作ったBlob URLから保存する
   const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+  const download = (name) =>
+    chrome.downloads.download({ url, filename: `ArticlePDF/${name}`, conflictAction: "uniquify", saveAs: false });
   try {
-    const downloadId = await chrome.downloads.download({
-      url,
-      filename: `ArticlePDF/${filename}`,
-      conflictAction: "uniquify",
-      saveAs: false,
-    });
+    let downloadId;
+    try {
+      downloadId = await download(filename);
+    } catch (err) {
+      // ファイル名の文字(日本語など)を扱えない環境では「Invalid filename」で拒否されるので、
+      // 英数字だけの名前で保存し直す(実測: 文字コードがPOSIXのLinux)
+      if (!/invalid filename/i.test(String(err?.message))) throw err;
+      downloadId = await download(filename.replace(/[^\x21-\x7e]+/g, "").replace(/_-*\.pdf$/, "_article.pdf"));
+    }
     return await waitForDownload(downloadId);
   } finally {
     URL.revokeObjectURL(url);
