@@ -1,5 +1,5 @@
 /**
- * host.mjs — 拡張機能から受け取ったPDFを保存先(config.json の outDir。通常は OneDrive/ArticlePDF)に
+ * host.mjs — 拡張機能から受け取ったPDFを保存先(config.json の outDir。未指定なら OneDrive か「ドキュメント」の ArticlePDF)に
  * 書き込む受け口。
  *
  * ブラウザの拡張機能はダウンロードフォルダの中にしか書き込めないため、Chrome/Edge の

@@ -1,17 +1,18 @@
 # article-pdf
 
-開いている記事の本文だけを抜き出し、テキスト付きのPDFにしてOneDriveに保存する、Chrome / Edge の拡張機能です。
+開いている記事の本文だけを抜き出し、テキスト付きのPDFにして指定のフォルダに保存する、Chrome / Edge の拡張機能です。
 The Economist・Financial Times・日本経済新聞に対応しています（その他のサイトも本文の抽出を試みます）。
 
 ## セットアップ（PCごとに1回）
 
 Node.js 18以上が必要です。新しいPCでは、Claude Code に「READMEのセットアップを手伝って」と頼めば、この手順を案内してくれます。
 
-1. このリポジトリをクローンする。保存先は自動で OneDrive の `ArticlePDF` になります。
-   変える場合は、リポジトリ直下に `config.json` を作ります。
+1. このリポジトリをクローンし、直下に `config.json` を作って保存先のフォルダを書く
+   （Windowsのパスは `\` を2つ重ねる）
    ```json
-   {"outDir": "C:\\Users\\xxx\\OneDrive - 大学名\\ArticlePDF"}
+   {"outDir": "D:\\Articles"}
    ```
+   省略した場合は、OneDriveがあればその中の、なければ「ドキュメント」の中の `ArticlePDF` に保存します。
 2. リポジトリのフォルダで次を実行する（「動作確認: OK」と保存先が表示されれば完了）
    ```
    node native-host/install.mjs

@@ -1,5 +1,5 @@
 /**
- * install.mjs — 拡張機能から OneDrive に直接保存するための受け口(host.mjs)を Chrome と Edge に登録する。
+ * install.mjs — 拡張機能から指定のフォルダに直接保存するための受け口(host.mjs)を Chrome と Edge に登録する。
  * PCごとに1回だけ実行する。管理者権限は不要(ユーザー単位の登録)。
  *
  *   node native-host/install.mjs              # 登録
@@ -101,7 +101,7 @@ function uninstall() {
   rmSync(launcher, { force: true });
 }
 
-// 管理されたPC(大学PC等)では、ポリシーで受け口が禁止されていることがある。その場合
+// 組織が管理するPCでは、ポリシーで受け口が禁止されていることがある。その場合
 // 拡張機能はダウンロードフォルダに保存するので、登録時点で分かるように知らせる(Windowsのみ)。
 function policyWarnings() {
   if (!isWin) return [];
