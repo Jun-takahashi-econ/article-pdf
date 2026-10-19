@@ -135,6 +135,34 @@ const fetchAsDataUri = (page, src) =>
     return null;
   }, src);
 
+// BoT対策のブロック画面かどうかを判定し、該当すれば対策サービスの名前を返す。
+// ここで止めないと、ブロック画面に対して本文抽出を試みて「未ログイン」と誤案内してしまう
+// (ログインし直しても解決しない)。Economistは DataDome を使っており、自動操縦のブラウザで
+// 続けて開くと「アクセスは一時的に制限されています」の画面になり、数時間解除されない。
+// この画面は geo.captcha-delivery.com の iframe で表示され、本文側のテキストには出てこない。
+async function detectBotWall(page, res) {
+  const status = res?.status() ?? 0;
+  const headers = res?.headers() ?? {};
+  if (page.frames().some((f) => /captcha-delivery\.com/i.test(f.url()))) return "DataDome";
+  if (status === 403 && Object.keys(headers).some((h) => h.startsWith("x-datadome"))) return "DataDome";
+  if (headers["cf-mitigated"] === "challenge") return "Cloudflare";
+  // URLやヘッダーで判別できない場合の保険として、iframeの中も含めて文言を見る。
+  // 広告のiframe等で待たされないよう並列にし、1枚あたりの待ち時間に上限を設ける。
+  // 本文に同じ言い回しを含む記事を誤判定しないよう、ブロック画面らしい短いページに限る。
+  const texts = await Promise.all(
+    page.frames().map((f) =>
+      Promise.race([
+        f.evaluate(() => `${document.title}\n${document.body?.innerText || ""}`).catch(() => ""),
+        new Promise((r) => setTimeout(() => r(""), 1500)),
+      ])
+    )
+  );
+  const blocked = texts.some(
+    (t) => t.length < 2000 && /access is temporarily restricted|アクセスは一時的に制限/i.test(t)
+  );
+  return blocked ? "DataDome" : null;
+}
+
 // ---- 出力先の決定: ARTICLE_PDF_OUT > OneDrive自動検出 > ~/Documents/ArticlePDF ----
 function detectOneDrive() {
   // Windows: 環境変数 OneDrive / OneDriveCommercial が自動で設定されている
@@ -238,7 +266,16 @@ try {
   const site = resolveSite(url);
   const page = await browser.newPage();
   console.log(`取得中: ${url}`);
-  await page.goto(url, { waitUntil: "networkidle2", timeout: 90_000 });
+  const res = await page.goto(url, { waitUntil: "networkidle2", timeout: 90_000 });
+  const wall = await detectBotWall(page, res);
+  if (wall) {
+    // SaveArticle のダイアログは出力の末尾4行だけを出すので、要点を短くまとめる
+    throw new Error(
+      `${site.name || "サイト"}のBoT対策(${wall})でアクセスが一時的に制限されました。\n` +
+        "普段のブラウザでは読めるので、拡張機能版(extension/)で保存してください。\n" +
+        "このツールでの再試行は制限が長引くので、数時間あけてください。"
+    );
+  }
 
   // 遅延読み込み対策: ページ全体をゆっくりスクロールして画像/グラフの読み込みを誘発する
   await page.evaluate(async () => {
