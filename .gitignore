@@ -2,3 +2,7 @@ node_modules/
 config.json
 *.pdf
 .DS_Store
+# native-host/install.mjs が PC ごとに生成するファイル
+native-host/com.article_pdf.save.json
+native-host/run.cmd
+native-host/run.sh

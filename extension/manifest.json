@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Article PDF",
+  "version": "0.2.0",
+  "description": "開いている記事の本文だけを抜き出して、テキスト付きのPDFに保存します。",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxTHR81uys/FuuaeMeN3/t/ZL8E+3pr/Pf0Lq+iIppmfTocsqQGBbbbXBzOF5kXQdyw3RcM3898fwIJYN3cG9kQZXnTo9trxhIdV732TFhLcKlMV+T9IEUrVm0QfuksyBUDZ0eGosOxQf0VUV2DjUELCBPckLA8PKjZCR3ZPlZDpYZ/5gsaDfxURBMHzyK1q2kyjPF5DKka6ASIZ42It44SLUuLX7mC8h/nv9EvMwMbeGDKdKsmuQos5orTyHKgHnlwn3OakpMBuW4yWb5hi78bPas1YyyZwrQThkZ7aeBnfrdn5ou6xn2Nica7eYxe2z/FTrk03DBtrEhM2iyy3VPQIDAQAB",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "この記事をPDFに保存",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "debugger",
+    "downloads",
+    "nativeMessaging"
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+P"
+      },
+      "description": "この記事をPDFに保存"
+    }
+  }
+}
