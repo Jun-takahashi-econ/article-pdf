@@ -1,7 +1,7 @@
 // render.js — 整形済みHTMLをこのタブ(拡張機能のページ)に流し込み、自分自身をPDFに印刷して保存する。
 // 印刷に使うデバッガー(DevToolsプロトコル)はこのタブにだけつなぐので、記事のタブには一切つながらない。
 //
-// 保存先は config.json の outDir(通常は OneDrive/ArticlePDF)。拡張機能はダウンロードフォルダの
+// 保存先は config.json の outDir(未指定なら OneDrive か「ドキュメント」の ArticlePDF)。拡張機能はダウンロードフォルダの
 // 中にしか書き込めないので、PC側の受け口(native-host/host.mjs)に書き込みを任せる。受け口が
 // 使えないPC(未登録、管理ポリシーで禁止)ではダウンロードフォルダに保存し、その理由を伝える。
 
@@ -64,9 +64,9 @@ async function saveViaHost(base64, filename) {
 // 受け口が使えない理由を、次に何をすればよいか分かる言葉にする
 function hostProblem(err) {
   const m = String(err?.message || err);
-  if (/not found/i.test(m)) return "このPCはOneDrive保存の設定がまだです(native-host/install.mjs を実行してください)";
-  if (/forbidden/i.test(m)) return "このPCの管理ポリシーで、OneDriveへの直接保存が止められています";
-  return `OneDriveに保存できませんでした(${m})`;
+  if (/not found/i.test(m)) return "このPCではまだ native-host/install.mjs を実行していません";
+  if (/forbidden/i.test(m)) return "このPCの管理ポリシーで、指定のフォルダへの保存が止められています";
+  return `指定のフォルダに保存できませんでした(${m})`;
 }
 
 async function saveToDownloads(base64, filename) {

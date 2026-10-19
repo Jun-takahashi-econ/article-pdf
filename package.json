@@ -2,7 +2,7 @@
   "name": "article-pdf",
   "version": "2.0.0",
   "private": true,
-  "description": "開いている記事の本文だけを抜き出してPDFにし、OneDriveに保存するChrome/Edge拡張機能",
+  "description": "開いている記事の本文だけを抜き出してPDFにし、指定のフォルダに保存するChrome/Edge拡張機能",
   "engines": {
     "node": ">=18"
   },
